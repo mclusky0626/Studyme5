@@ -17,3 +17,6 @@ venv/
 
 # runtime data
 data/
+
+# logs
+*.log
