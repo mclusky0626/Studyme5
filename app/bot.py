@@ -64,8 +64,8 @@ class MemoryBot(discord.Client):
 
     # ------------------------------------------------------------------ lifecycle
     async def setup_hook(self) -> None:
-        await self.memory.start()
-        await self.batcher.replay_failed()
+        if await self.memory.start():
+            await self.batcher.replay_failed()
         try:
             if self.s.dev_guild_id:
                 guild = discord.Object(id=self.s.dev_guild_id)
@@ -100,6 +100,9 @@ class MemoryBot(discord.Client):
     async def _status_loop(self) -> None:
         while True:
             try:
+                if not self.memory.available and await self.memory.try_reconnect():
+                    log.info("FalkorDB 재연결 성공 — 보관해 둔 대화를 장기 기억에 반영합니다.")
+                    await self.batcher.replay_failed()
                 await self.memory.write_status(self._status())
                 await self.memory.prune_cache()
             except Exception:  # noqa: BLE001
@@ -114,6 +117,7 @@ class MemoryBot(discord.Client):
             "graph_model": self.s.llm_model,
             "embedding_model": self.s.embedding_model,
             "capture_all_messages": self.s.capture_all_messages,
+            "memory_online": self.memory.available,
             **self.batcher.stats(),
         }
 
@@ -130,6 +134,8 @@ class MemoryBot(discord.Client):
         return gid, f"DM · {user.name}", "dm", f"Discord DM ({user.name})"
 
     def _bot_name(self, guild: discord.Guild | None) -> str:
+        if self.s.bot_name:
+            return self.s.bot_name
         if guild and guild.me:
             return guild.me.display_name
         return self.user.display_name if self.user else "bot"
@@ -152,8 +158,9 @@ class MemoryBot(discord.Client):
     def _clean(self, message: discord.Message) -> str:
         text = message.clean_content
         if self.user:
-            # @봇이름 멘션 제거
-            for name in {self.user.display_name, self.user.name, self._bot_name(message.guild)}:
+            # @봇이름 멘션 제거 (계정명, 서버 닉네임)
+            nick = message.guild.me.display_name if message.guild and message.guild.me else None
+            for name in {self.user.display_name, self.user.name, nick} - {None}:
                 text = text.replace(f"@{name}", "")
         text = re.sub(r"\s+", " ", text).strip()
         if message.attachments and not text:

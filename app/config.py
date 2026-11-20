@@ -85,6 +85,7 @@ class Settings:
     falkordb_port: int
     falkordb_username: str | None
     falkordb_password: str | None
+    falkordb_wait_seconds: float
 
     # --- 메모리 동작 ---
     short_term_size: int
@@ -106,6 +107,7 @@ class Settings:
 
     # --- 봇 ---
     bot_persona: str | None
+    bot_name: str | None
     dev_guild_id: int | None
     data_dir: Path
     log_level: str
@@ -137,6 +139,7 @@ class Settings:
             falkordb_port=_int("FALKORDB_PORT", 6379),
             falkordb_username=_env("FALKORDB_USERNAME"),
             falkordb_password=_env("FALKORDB_PASSWORD"),
+            falkordb_wait_seconds=_float("FALKORDB_WAIT_SECONDS", 120.0),
             short_term_size=_int("SHORT_TERM_SIZE", 10),
             batch_max_messages=_int("BATCH_MAX_MESSAGES", 8),
             batch_max_chars=_int("BATCH_MAX_CHARS", 6000),
@@ -152,6 +155,7 @@ class Settings:
             gemini_max_retries=_int("GEMINI_MAX_RETRIES", 5),
             episode_max_retries=_int("EPISODE_MAX_RETRIES", 4),
             bot_persona=_env("BOT_PERSONA"),
+            bot_name=_env("BOT_NAME", default="라스페치아"),
             dev_guild_id=int(dev_guild) if dev_guild else None,
             data_dir=Path(_env("DATA_DIR", default=str(Path(__file__).resolve().parent.parent / "data"))),
             log_level=_env("LOG_LEVEL", default="INFO").upper(),

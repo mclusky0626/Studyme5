@@ -62,6 +62,10 @@ EXTRACTION_HINT = (
 )
 
 
+class MemoryUnavailable(RuntimeError):
+    """FalkorDB 미연결 — 재시도하지 않고 바로 파일에 보관할 대상."""
+
+
 def group_id_for(guild_id: int | None, user_id: int) -> str:
     """서버는 guild-<id>, DM 은 dm-<user_id> 로 기억 공간을 분리한다."""
     return f"guild-{guild_id}" if guild_id is not None else f"dm-{user_id}"
@@ -159,29 +163,51 @@ class MemoryService:
         )
 
     # ------------------------------------------------------------------ lifecycle
-    async def start(self) -> None:
-        # FalkorDB 클라이언트는 생성자에서 "동기식"으로 접속(클러스터 여부 확인)하므로
-        # FalkorDB 컨테이너가 늦게 뜨는 경우를 대비해 생성 자체를 재시도한다.
-        for attempt in range(1, 61):
-            try:
-                driver = await asyncio.to_thread(
-                    FalkorDriver,
-                    host=self.s.falkordb_host,
-                    port=self.s.falkordb_port,
-                    username=self.s.falkordb_username,
-                    password=self.s.falkordb_password,
-                )
-                self._base_driver = driver
-                await self.redis.ping()
-                break
-            except Exception as exc:  # noqa: BLE001
-                if attempt == 60:
-                    raise
-                log.info("FalkorDB 연결 대기 중... (%s) %d/60", type(exc).__name__, attempt)
-                await asyncio.sleep(2)
+    @property
+    def available(self) -> bool:
+        return self._base_driver is not None
+
+    async def _connect_once(self) -> bool:
+        # FalkorDB 클라이언트는 생성자에서 "동기식"으로 접속(클러스터 여부 확인)한다.
+        try:
+            driver = await asyncio.to_thread(
+                FalkorDriver,
+                host=self.s.falkordb_host,
+                port=self.s.falkordb_port,
+                username=self.s.falkordb_username,
+                password=self.s.falkordb_password,
+            )
+            await driver.client.connection.ping()
+        except Exception as exc:  # noqa: BLE001
+            log.debug("FalkorDB 연결 실패: %s", exc)
+            return False
+        self._base_driver = driver
         await self.refresh_graph_list()
         log.info("FalkorDB 연결 완료 %s:%s — 기존 기억 공간 %d개",
                  self.s.falkordb_host, self.s.falkordb_port, len(self._existing_graphs))
+        return True
+
+    async def start(self, *, required: bool = False) -> bool:
+        """FalkorDB 가 늦게 뜨는 경우를 대비해 FALKORDB_WAIT_SECONDS 동안 재시도.
+        실패하면 required=False 일 때 장기 기억 없이(단기 기억만) 계속 동작한다."""
+        attempts = max(1, int(self.s.falkordb_wait_seconds // 2))
+        for attempt in range(1, attempts + 1):
+            if await self._connect_once():
+                return True
+            if attempt < attempts:
+                log.info("FalkorDB(%s:%s) 연결 대기 중... %d/%d", self.s.falkordb_host,
+                         self.s.falkordb_port, attempt, attempts)
+                await asyncio.sleep(2)
+        if required:
+            raise ConnectionError(f"FalkorDB {self.s.falkordb_host}:{self.s.falkordb_port} 에 연결할 수 없습니다")
+        log.warning("⚠️ FalkorDB 에 연결할 수 없어 장기 기억 없이(단기 기억만) 동작합니다. "
+                    "저장할 대화는 파일에 보관했다가 DB 가 연결되면 자동으로 반영합니다.")
+        return False
+
+    async def try_reconnect(self) -> bool:
+        if self.available:
+            return True
+        return await self._connect_once()
 
     async def close(self) -> None:
         if self._base_driver is not None:
@@ -201,6 +227,8 @@ class MemoryService:
 
     async def prune_cache(self) -> None:
         """관리 웹에서 삭제된 그래프의 캐시를 버린다 (다시 쓰일 때 인덱스부터 재생성)."""
+        if not self.available:
+            return
         await self.refresh_graph_list()
         for gid in [g for g in self._graphs if g not in self._existing_graphs]:
             self._graphs.pop(gid, None)
@@ -289,6 +317,8 @@ class MemoryService:
 
     # ------------------------------------------------------------------ write
     async def save_episode(self, ep: Episode):
+        if not self.available:
+            raise MemoryUnavailable("FalkorDB 미연결")
         g = await self.for_group(ep.group_id)
         result = await g.add_episode(
             name=ep.name,

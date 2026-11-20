@@ -42,7 +42,7 @@ def create_app(repo: GraphRepo | None = None) -> FastAPI:
         memory = None
         if repo is None:
             memory = MemoryService(settings, RateLimiter(settings.gemini_rpm))
-            await memory.start()
+            await memory.start(required=True)
             app.state.repo = GraphRepo(memory)
         else:
             app.state.repo = repo

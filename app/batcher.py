@@ -23,7 +23,7 @@ from typing import Any
 
 from .config import Settings
 from .gemini_resilience import is_retryable
-from .memory import Episode
+from .memory import Episode, MemoryUnavailable
 
 log = logging.getLogger(__name__)
 
@@ -212,6 +212,11 @@ class EpisodeBatcher:
                 await self._emit({"type": "saved", "group_id": ep.group_id, "episode": ep.name,
                                   "messages": ep.message_count, "nodes": nodes, "edges": edges,
                                   "seconds": round(elapsed, 1)})
+                return
+
+            if isinstance(error, MemoryUnavailable):
+                # DB 미연결: 토큰을 쓰지 않았으므로 재시도 없이 보관 → 재연결 시 자동 반영
+                self._dead_letter(ep, "FalkorDB 미연결")
                 return
 
             ep.attempts += 1
