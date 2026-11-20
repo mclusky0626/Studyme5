@@ -37,18 +37,27 @@ def _env(*names: str, default: str | None = None) -> str | None:
     return default
 
 
-def _int(name: str, default: int) -> int:
+def _scalar(name: str) -> str | None:
+    """숫자/불리언 값: `8   # 설명` 처럼 인라인 주석이 남아 있어도 안전하게 파싱."""
     value = _env(name)
+    if value is None:
+        return None
+    value = value.split("#", 1)[0].strip()
+    return value or None
+
+
+def _int(name: str, default: int) -> int:
+    value = _scalar(name)
     return int(value) if value is not None else default
 
 
 def _float(name: str, default: float) -> float:
-    value = _env(name)
+    value = _scalar(name)
     return float(value) if value is not None else default
 
 
 def _bool(name: str, default: bool) -> bool:
-    value = _env(name)
+    value = _scalar(name)
     if value is None:
         return default
     return value.lower() in {"1", "true", "yes", "y", "on"}

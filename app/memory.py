@@ -160,21 +160,24 @@ class MemoryService:
 
     # ------------------------------------------------------------------ lifecycle
     async def start(self) -> None:
-        self._base_driver = FalkorDriver(
-            host=self.s.falkordb_host,
-            port=self.s.falkordb_port,
-            username=self.s.falkordb_username,
-            password=self.s.falkordb_password,
-        )
-        # FalkorDB 가 늦게 뜨는 경우를 대비해 연결을 재시도한다.
-        for attempt in range(1, 31):
+        # FalkorDB 클라이언트는 생성자에서 "동기식"으로 접속(클러스터 여부 확인)하므로
+        # FalkorDB 컨테이너가 늦게 뜨는 경우를 대비해 생성 자체를 재시도한다.
+        for attempt in range(1, 61):
             try:
+                driver = await asyncio.to_thread(
+                    FalkorDriver,
+                    host=self.s.falkordb_host,
+                    port=self.s.falkordb_port,
+                    username=self.s.falkordb_username,
+                    password=self.s.falkordb_password,
+                )
+                self._base_driver = driver
                 await self.redis.ping()
                 break
             except Exception as exc:  # noqa: BLE001
-                if attempt == 30:
+                if attempt == 60:
                     raise
-                log.info("FalkorDB 연결 대기 중... (%s) %d/30", type(exc).__name__, attempt)
+                log.info("FalkorDB 연결 대기 중... (%s) %d/60", type(exc).__name__, attempt)
                 await asyncio.sleep(2)
         await self.refresh_graph_list()
         log.info("FalkorDB 연결 완료 %s:%s — 기존 기억 공간 %d개",

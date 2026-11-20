@@ -1,0 +1,12 @@
+# 2026-11 기준 실제 동작 확인한 버전으로 고정
+graphiti-core[falkordb,google-genai]==0.31.2
+falkordb==1.8.2
+google-genai==3.6.1
+discord.py==2.7.1
+fastapi==0.165.0
+uvicorn[standard]==0.54.0
+# graphiti-core 가 import 하지만 의존성에 명시되어 있지 않아 직접 설치
+httpx==0.28.1
+python-dotenv==1.2.4
+# slim 이미지에서 Asia/Seoul 시간대 사용
+tzdata==2026.6

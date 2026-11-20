@@ -1,0 +1,69 @@
+name: memory-bot
+
+x-app: &app
+  build: .
+  image: memory-bot:latest
+  restart: unless-stopped
+  env_file: .env
+  depends_on:
+    falkordb:
+      condition: service_started  # 앱이 연결될 때까지 자체 재시도함
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  # 그래프 DB (+ 3000번 포트 FalkorDB Browser 포함)
+  falkordb:
+    image: falkordb/falkordb:latest
+    restart: unless-stopped
+    environment:
+      # AOF 로 매초 디스크에 기록 → 컨테이너가 죽어도 기억이 남는다
+      REDIS_ARGS: "--appendonly yes --appendfsync everysec"
+    ports:
+      - "${FALKORDB_BROWSER_PORT:-3000}:3000"
+      # 호스트에서 DB 에 직접 붙어야 할 때만 주석 해제 (기본은 내부망 전용)
+      # - "6379:6379"
+    volumes:
+      - falkordb_data:/var/lib/falkordb/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+  # 디스코드 봇
+  bot:
+    <<: *app
+    environment:
+      FALKORDB_HOST: falkordb
+      FALKORDB_PORT: "6379"
+      DATA_DIR: /app/data
+    volumes:
+      - bot_data:/app/data
+    # docker stop 시 남은 대화 버퍼를 장기 기억에 저장할 시간을 준다
+    stop_grace_period: 2m
+
+  # 기억 관리 웹 (http://<홈서버>:8080)
+  admin:
+    <<: *app
+    command: ["python", "-m", "app.admin"]
+    environment:
+      FALKORDB_HOST: falkordb
+      FALKORDB_PORT: "6379"
+      ADMIN_HOST: 0.0.0.0
+      ADMIN_PORT: "8000"
+    ports:
+      - "${ADMIN_WEB_PORT:-8080}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  falkordb_data:
+  bot_data:
