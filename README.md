@@ -1,9 +1,10 @@
-# 🧠 라스페치아 — 디스코드 장기 기억 AI 봇
+# Studyme v5 The best and the last model
 
 Graphiti(시간 인식 지식 그래프) + FalkorDB + Gemini 로 만든, **대화를 오래 기억하고 계산·날씨·검색까지 해 주는 디스코드 봇**입니다.
 `docker compose` 한 번으로 FalkorDB · 봇 · 기억 관리 웹이 함께 뜹니다.
+앞으로의 스터디미 개발은 없을 것이고 현재 기능을 추가하고 유지보수 하는 방식일 것입니다.
 
-📘 **자세한 설명은 [상세 가이드 (docs/GUIDE.md)](docs/GUIDE.md)** — 사용자 체크리스트, 관리 체계, 페르소나, 도구, 운영·백업·문제 해결
+ **자세한 설명은 [상세 가이드 (docs/GUIDE.md)](docs/GUIDE.md)** — 사용자 체크리스트, 관리 체계, 페르소나, 도구, 운영·백업·문제 해결
 
 ```mermaid
 flowchart LR
