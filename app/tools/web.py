@@ -123,21 +123,29 @@ async def convert_currency(args, ctx: ToolContext):
     "web_search",
     "구글 검색으로 최신·실시간 정보를 찾는다: 뉴스, 경기 결과, 주가·코인 시세, 출시일, 영업시간, 맛집, 최근 사건, "
     "잘 모르는 고유명사 등. 학습 지식이 오래됐을 수 있는 질문이면 추측하지 말고 이 도구를 쓴다.",
-    {"query": {"type": "string", "description": "검색할 질문 (한국어 가능, 구체적으로)"}},
+    {
+        "query": {"type": "string", "description": "검색할 질문 (한국어 가능, 구체적으로)"},
+        "detail": {"type": "string", "enum": ["brief", "detailed"],
+                   "description": "brief=핵심 몇 문장(기본), detailed=정리·예문·비교·목록이 필요할 때 자세히"},
+    },
     ["query"],
 )
 async def web_search(args, ctx: ToolContext):
     query = str(args.get("query", "")).strip()[:300]
     if not query:
         raise ToolError("검색어가 비어 있습니다")
+    detailed = str(args.get("detail", "brief")).lower() == "detailed"
+    guide = (
+        "웹 검색 결과를 바탕으로 질문에 답하는 데 필요한 자료를 한국어로 자세히 정리하라. "
+        "목록·실제 예문·인용·비교 항목이 있으면 가능한 한 많이 원문 그대로 포함하라 (최대 40줄)."
+        if detailed else
+        "웹 검색 결과를 바탕으로 질문에 필요한 핵심 사실만 한국어로 5문장 이내로 정리하라."
+    )
     config = types.GenerateContentConfig(
         tools=[types.Tool(google_search=types.GoogleSearch())],
         temperature=0.2,
-        max_output_tokens=1200,
-        system_instruction=(
-            "웹 검색 결과를 바탕으로 질문에 필요한 핵심 사실만 한국어로 5문장 이내로 정리하라. "
-            "날짜·수치·고유명사는 정확히 쓰고, 검색으로 확인되지 않은 내용은 쓰지 마라."
-        ),
+        max_output_tokens=4000 if detailed else 1200,
+        system_instruction=guide + " 날짜·수치·고유명사는 정확히 쓰고, 검색으로 확인되지 않은 내용은 지어내지 마라.",
     )
 
     async def _call():

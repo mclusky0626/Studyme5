@@ -81,6 +81,7 @@ class Settings:
     chat_temperature: float
     tools_enabled: str
     chat_max_tool_steps: int
+    chat_max_output_tokens: int
 
     # --- FalkorDB ---
     falkordb_host: str
@@ -139,7 +140,8 @@ class Settings:
             chat_thinking_level=_env("CHAT_THINKING_LEVEL", default="low"),
             chat_temperature=_float("CHAT_TEMPERATURE", 0.8),
             tools_enabled=_env("TOOLS_ENABLED", default="all"),
-            chat_max_tool_steps=_int("CHAT_MAX_TOOL_STEPS", 4),
+            chat_max_tool_steps=_int("CHAT_MAX_TOOL_STEPS", 5),
+            chat_max_output_tokens=_int("CHAT_MAX_OUTPUT_TOKENS", 8192),
             falkordb_host=_env("FALKORDB_HOST", default="localhost"),
             falkordb_port=_int("FALKORDB_PORT", 6379),
             falkordb_username=_env("FALKORDB_USERNAME"),

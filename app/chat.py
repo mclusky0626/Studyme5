@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -21,8 +22,21 @@ from .tools import ToolContext, declarations, run_tool
 
 log = logging.getLogger(__name__)
 
+# "잠시만요, 찾아볼게요" 처럼 나중을 약속하고 끝내는 답변 감지 (봇은 한 번 답하면 후속 메시지를 못 보냄)
+PROMISE_RE = re.compile(
+    r"(잠시만|잠깐만|기다려\s*주|기다려줘|찾아\s*(볼|보고|올)|검색해\s*(볼|보고|올)|알아\s*(볼|보고|올)|"
+    r"확인해\s*(볼|보고|올)|조사해\s*(볼|보고|올)|정리해\s*서?\s*(보여|알려|드릴|줄)|준비해\s*서?\s*(보여|드릴)|"
+    r"곧\s*(보여|알려|정리)|금방\s*(보여|알려|정리|가져))"
+)
+NUDGE = (
+    "[시스템] 방금 답변은 '잠시만요/찾아볼게요/정리해서 보여드릴게요' 같은 약속으로 끝났다. "
+    "너는 이 답변 이후에 메시지를 보낼 수 없다. 정보가 더 필요하면 지금 도구를 호출하고, "
+    "아니면 지금 가진 정보로 요청된 내용을 이 답변 안에서 끝까지 완성하라. 약속하는 문장은 쓰지 마라."
+)
+
 TOOL_GUIDE = """[도구 사용]
 - 필요할 때만 함수를 호출하고, 결과를 바탕으로 자연스럽게 답한다. 도구 이름이나 JSON 을 그대로 보여 주지 마라.
+- 한 번의 검색으로 부족하면 검색어를 바꿔 여러 번 호출해도 된다. 정리·예문·비교처럼 자세한 자료가 필요하면 web_search 의 detail="detailed".
 - 숫자 계산은 암산하지 말고 calculate. 날씨는 get_weather(영문 도시명). 환율은 convert_currency.
 - 뉴스·시세·경기 결과·영업시간처럼 최신 정보가 필요하거나 확실하지 않은 사실은 web_search 로 확인한다.
 - "~분 뒤/~시에 알려줘" 는 set_reminder. 고르기·주사위·제비뽑기는 random_pick. D-day·요일은 date_calc.
@@ -72,7 +86,10 @@ class ChatResponder:
             "- '데이터베이스에 따르면', '기억 목록에 의하면' 같은 기계적인 표현은 쓰지 마라.",
             "- 기억과 현재 대화가 충돌하면 현재 대화를 우선하고, '과거 사실'로 표시된 것은 지금은 유효하지 않을 수 있다.",
             "- 모르는 것은 지어내지 말고 솔직하게 물어봐라.",
-            "- 디스코드 채팅이므로 보통 1~4문장으로 간결하게 답하고, 마크다운은 꼭 필요할 때만 쓴다.",
+            "- 너는 메시지당 답장을 한 번만 보낼 수 있다. '잠시만요', '찾아볼게요', '정리해서 보여드릴게요'처럼 "
+            "나중을 약속하는 말로 끝내지 말고, 필요한 도구는 지금 호출해서 이 답변 안에서 완성하라.",
+            "- 일상 대화는 1~4문장으로 짧게. 단, 정리·목록·예문·비교·자세한 설명을 요청받으면 요청한 분량을 "
+            "끝까지 채워서 답하라 (긴 답변은 자동으로 나눠 전송된다). 디스코드 마크다운(굵게, 목록, 제목)을 써도 된다.",
             f"- 현재 시각: {now}",
         ]
         if with_tools:
@@ -126,7 +143,7 @@ class ChatResponder:
         base = types.GenerateContentConfig(
             system_instruction=system_prompt,
             temperature=self.s.chat_temperature,
-            max_output_tokens=2048,
+            max_output_tokens=self.s.chat_max_output_tokens,
             thinking_config=self._thinking,
         )
         with_tools = base.model_copy(update={
@@ -141,12 +158,26 @@ class ChatResponder:
         async with self._sem:
             response = None
             max_steps = max(0, self.s.chat_max_tool_steps) if decls else 0
-            for step in range(max_steps + 1):
+            nudged = False
+            step = 0
+            while True:
                 last = step >= max_steps
                 response = await self._generate(contents, no_tools if last else with_tools)
                 calls = response.function_calls or []
-                if not calls or last:
+                if not calls:
+                    draft = (getattr(response, "text", None) or "").strip()
+                    # 약속만 하고 끝난 답변이면 한 번 더 기회를 준다 (마지막 단계여도 도구 없이 완성하게)
+                    if not nudged and draft and PROMISE_RE.search(draft[-300:]) and response.candidates:
+                        log.info("약속형 답변 감지 → 완성 요청: %s", draft[-120:].replace("\n", " "))
+                        nudged = True
+                        contents.append(response.candidates[0].content)
+                        contents.append(types.Content(role="user", parts=[types.Part.from_text(text=NUDGE)]))
+                        step += 1
+                        continue
                     break
+                if last:
+                    break
+                step += 1
                 # 모델의 함수 호출 턴(사고 서명 포함)을 그대로 대화에 붙인 뒤 결과를 돌려준다.
                 contents.append(response.candidates[0].content)
                 results = await asyncio.gather(*(run_tool(fc.name, fc.args, tool_ctx) for fc in calls))

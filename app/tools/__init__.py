@@ -27,7 +27,7 @@ if TYPE_CHECKING:  # pragma: no cover
 log = logging.getLogger(__name__)
 
 Handler = Callable[[dict[str, Any], "ToolContext"], Awaitable[dict[str, Any]]]
-MAX_RESULT_CHARS = 4000
+MAX_RESULT_CHARS = 8000
 TOOL_TIMEOUT = 30.0
 
 
