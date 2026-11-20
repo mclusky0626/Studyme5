@@ -226,6 +226,8 @@ class MemoryBot(discord.Client):
 
         reply_text: str | None = None
         bot_name, persona = await self.persona.get()
+        started = asyncio.get_running_loop().time()
+        log.info("💬 [%s] %s: %s", gid, speaker, text[:80].replace("\n", " "))
         try:
             async with message.channel.typing():
                 memory_ctx = await self.memory.search(gid, f"{speaker} {text}")
@@ -246,6 +248,8 @@ class MemoryBot(discord.Client):
             await message.reply(chunks[0], mention_author=False)
             for chunk in chunks[1:]:
                 await message.channel.send(chunk)
+            log.info("↩️ [%s] 답변 전송 (%.1fs, %d자, 메시지 %d개)", gid,
+                     asyncio.get_running_loop().time() - started, len(reply_text), len(chunks))
         except Exception as exc:  # noqa: BLE001
             log.exception("[%s] 답변 생성/전송 실패: %s", gid, exc)
             reply_text = None
