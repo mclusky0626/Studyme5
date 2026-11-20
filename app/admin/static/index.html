@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Memory Console</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧠</text></svg>" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css" />
+  <link rel="stylesheet" href="/static/styles.css" />
+  <script src="https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
+  <script>
+    window.vis || document.write('<script src="https://cdn.jsdelivr.net/npm/vis-network@9.1.9/standalone/umd/vis-network.min.js"><\/script>');
+  </script>
+</head>
+<body>
+  <header class="topbar">
+    <button class="icon-btn only-mobile" id="menuBtn" aria-label="기억 공간 목록">☰</button>
+    <div class="brand">
+      <span class="brand-mark">🧠</span>
+      <div>
+        <div class="brand-title">Memory Console</div>
+        <div class="brand-sub" id="brandSub">Graphiti · FalkorDB · Gemini</div>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <div class="status-pill" id="botStatus" title="봇 상태">
+        <span class="dot"></span><span class="label">확인 중…</span>
+      </div>
+      <button class="icon-btn" id="themeBtn" aria-label="테마 전환" title="테마 전환">◐</button>
+      <button class="icon-btn" id="refreshBtn" aria-label="새로고침" title="새로고침">↻</button>
+    </div>
+  </header>
+
+  <div class="banner warn hidden" id="authBanner">
+    ⚠️ 관리 웹이 <b>인증 없이</b> 열려 있습니다. <code>.env</code>에 <code>ADMIN_PASSWORD</code>를 설정하세요.
+  </div>
+
+  <div class="layout">
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-head">
+        <h2>기억 공간</h2>
+        <span class="count" id="spaceCount">0</span>
+      </div>
+      <input class="input" id="spaceFilter" placeholder="서버/DM 이름 검색" />
+      <div class="space-list" id="spaceList">
+        <div class="empty small">불러오는 중…</div>
+      </div>
+      <div class="sidebar-foot">
+        <div class="mini-stats" id="botStats"></div>
+      </div>
+    </aside>
+    <div class="scrim hidden" id="scrim"></div>
+
+    <main class="main" id="main">
+      <section class="welcome" id="welcome">
+        <div class="welcome-card">
+          <div class="welcome-emoji">🗂️</div>
+          <h1>기억 공간을 선택하세요</h1>
+          <p>디스코드 서버(<code>guild-…</code>)와 DM(<code>dm-…</code>)마다 기억이 완전히 분리된 그래프로 저장됩니다.</p>
+          <p class="muted">봇과 대화한 뒤 <b>8마디</b>가 쌓이거나 <b>90초</b> 동안 대화가 없으면 자동으로 저장돼요.</p>
+        </div>
+      </section>
+
+      <section class="space-view hidden" id="spaceView">
+        <div class="space-header">
+          <div class="space-title">
+            <span class="kind-badge" id="spaceKind">서버</span>
+            <h1 id="spaceName">-</h1>
+            <code class="gid" id="spaceGid">-</code>
+          </div>
+          <div class="space-stats" id="spaceStats"></div>
+        </div>
+
+        <nav class="tabs" role="tablist">
+          <button class="tab active" data-tab="graph">그래프</button>
+          <button class="tab" data-tab="facts">사실</button>
+          <button class="tab" data-tab="episodes">에피소드</button>
+          <button class="tab" data-tab="search">의미 검색</button>
+          <button class="tab" data-tab="activity">저장 로그</button>
+          <button class="btn sm ghost danger-text tabs-end" id="deleteSpaceBtn" title="이 기억 공간 전체 삭제">공간 삭제</button>
+        </nav>
+
+        <!-- 그래프 -->
+        <div class="tab-panel" data-panel="graph">
+          <div class="toolbar">
+            <input class="input grow" id="graphFind" placeholder="그래프에서 엔티티 찾기" />
+            <label class="select-wrap">노드
+              <select id="graphLimit">
+                <option value="60">60</option>
+                <option value="150" selected>150</option>
+                <option value="300">300</option>
+                <option value="600">600</option>
+              </select>
+            </label>
+            <label class="toggle"><input type="checkbox" id="graphEpisodes" /> <span>에피소드</span></label>
+            <label class="toggle"><input type="checkbox" id="graphLabels" checked /> <span>관계명</span></label>
+            <label class="toggle"><input type="checkbox" id="graphPhysics" checked /> <span>물리</span></label>
+            <button class="btn" id="graphFit">화면 맞춤</button>
+          </div>
+          <div class="graph-wrap">
+            <div id="graph" class="graph"></div>
+            <div class="graph-empty hidden" id="graphEmpty">
+              <div>아직 이 공간에 저장된 엔티티가 없어요.</div>
+            </div>
+            <div class="legend">
+              <span><i class="lg lg-entity"></i>엔티티</span>
+              <span><i class="lg lg-episode"></i>에피소드</span>
+              <span><i class="lg lg-line"></i>사실(관계)</span>
+              <span><i class="lg lg-line dashed"></i>만료된 사실</span>
+            </div>
+            <div class="graph-info" id="graphInfo"></div>
+          </div>
+        </div>
+
+        <!-- 사실 -->
+        <div class="tab-panel hidden" data-panel="facts">
+          <div class="toolbar">
+            <input class="input grow" id="factQuery" placeholder="사실/엔티티 이름으로 필터" />
+            <label class="toggle"><input type="checkbox" id="factInvalid" checked /> <span>만료된 사실 포함</span></label>
+          </div>
+          <div class="list" id="factList"></div>
+          <div class="list-foot"><button class="btn hidden" id="factMore">더 보기</button></div>
+        </div>
+
+        <!-- 에피소드 -->
+        <div class="tab-panel hidden" data-panel="episodes">
+          <div class="toolbar">
+            <input class="input grow" id="episodeQuery" placeholder="대화 내용 검색" />
+          </div>
+          <p class="hint">에피소드 = 배칭되어 한 번에 저장된 대화 묶음. 삭제하면 그 대화에서만 생긴 엔티티/관계도 함께 정리됩니다.</p>
+          <div class="list" id="episodeList"></div>
+          <div class="list-foot"><button class="btn hidden" id="episodeMore">더 보기</button></div>
+        </div>
+
+        <!-- 의미 검색 -->
+        <div class="tab-panel hidden" data-panel="search">
+          <form class="toolbar" id="searchForm">
+            <input class="input grow" id="searchQuery" placeholder="예: 건우가 좋아하는 음식은?" autocomplete="off" />
+            <button class="btn primary" type="submit">검색</button>
+          </form>
+          <p class="hint">봇이 답변할 때와 같은 하이브리드 검색(BM25 + 임베딩, RRF)입니다. 임베딩 1회만 호출합니다.</p>
+          <div id="searchResults"></div>
+        </div>
+
+        <!-- 저장 로그 -->
+        <div class="tab-panel hidden" data-panel="activity">
+          <div class="toolbar">
+            <label class="toggle"><input type="checkbox" id="activityAll" /> <span>모든 공간 보기</span></label>
+          </div>
+          <div class="list" id="activityList"></div>
+        </div>
+      </section>
+    </main>
+
+    <!-- 노드 상세 -->
+    <aside class="drawer hidden" id="drawer" aria-label="엔티티 상세">
+      <div class="drawer-head">
+        <div>
+          <div class="drawer-labels" id="drawerLabels"></div>
+          <h2 id="drawerTitle">-</h2>
+        </div>
+        <button class="icon-btn" id="drawerClose" aria-label="닫기">✕</button>
+      </div>
+      <div class="drawer-body" id="drawerBody"></div>
+    </aside>
+  </div>
+
+  <!-- 모달 -->
+  <div class="modal hidden" id="modal" role="dialog" aria-modal="true">
+    <div class="modal-card">
+      <h3 id="modalTitle">확인</h3>
+      <div id="modalBody"></div>
+      <div class="modal-actions">
+        <button class="btn" id="modalCancel">취소</button>
+        <button class="btn primary" id="modalOk">확인</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toasts" id="toasts"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

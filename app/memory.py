@@ -118,7 +118,8 @@ class MemoryService:
         self._graph_lock = asyncio.Lock()
         self._existing_graphs: set[str] = set()
 
-        genai_client = genai.Client(api_key=settings.gemini_api_key)
+        # 관리 웹은 키 없이도 조회는 가능하도록 placeholder 로 생성 (검색/수정 호출 시에만 실패)
+        genai_client = genai.Client(api_key=settings.gemini_api_key or "missing-api-key")
         retries = settings.gemini_max_retries
         thinking = (
             types.ThinkingConfig(thinking_level=settings.graph_thinking_level)
@@ -194,6 +195,17 @@ class MemoryService:
             self._existing_graphs = {n.decode() if isinstance(n, bytes) else str(n) for n in names}
         except Exception as exc:  # noqa: BLE001
             log.warning("그래프 목록 조회 실패: %s", exc)
+
+    async def prune_cache(self) -> None:
+        """관리 웹에서 삭제된 그래프의 캐시를 버린다 (다시 쓰일 때 인덱스부터 재생성)."""
+        await self.refresh_graph_list()
+        for gid in [g for g in self._graphs if g not in self._existing_graphs]:
+            self._graphs.pop(gid, None)
+            log.info("[%s] 그래프가 삭제되어 캐시를 비웠습니다.", gid)
+
+    def forget_group(self, group_id: str) -> None:
+        self._graphs.pop(group_id, None)
+        self._existing_graphs.discard(group_id)
 
     async def for_group(self, group_id: str) -> Graphiti:
         """group_id 전용 Graphiti 인스턴스 (드라이버의 기본 DB = group_id)."""

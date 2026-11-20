@@ -101,6 +101,7 @@ class MemoryBot(discord.Client):
         while True:
             try:
                 await self.memory.write_status(self._status())
+                await self.memory.prune_cache()
             except Exception:  # noqa: BLE001
                 pass
             await asyncio.sleep(30)
