@@ -139,6 +139,7 @@ def create_app(repo: GraphRepo | None = None, persona: PersonaStore | None = Non
             bot_name=name, place="미리보기", history=[],
             current=ShortLine(speaker="관리자", text=body.message.strip()),
             memory=MemoryContext(), persona=body.persona.strip() or info["persona"],
+            tool_ctx=chat.tool_context(),
         )
         return {"reply": reply}
 

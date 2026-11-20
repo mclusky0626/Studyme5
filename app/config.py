@@ -79,6 +79,8 @@ class Settings:
     graph_thinking_level: str | None
     chat_thinking_level: str | None
     chat_temperature: float
+    tools_enabled: str
+    chat_max_tool_steps: int
 
     # --- FalkorDB ---
     falkordb_host: str
@@ -136,6 +138,8 @@ class Settings:
             graph_thinking_level=_env("GRAPH_THINKING_LEVEL", default="minimal"),
             chat_thinking_level=_env("CHAT_THINKING_LEVEL", default="low"),
             chat_temperature=_float("CHAT_TEMPERATURE", 0.8),
+            tools_enabled=_env("TOOLS_ENABLED", default="all"),
+            chat_max_tool_steps=_int("CHAT_MAX_TOOL_STEPS", 4),
             falkordb_host=_env("FALKORDB_HOST", default="localhost"),
             falkordb_port=_int("FALKORDB_PORT", 6379),
             falkordb_username=_env("FALKORDB_USERNAME"),

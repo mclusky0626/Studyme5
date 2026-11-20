@@ -16,6 +16,7 @@ from .config import Settings
 from .gemini_resilience import RateLimiter
 from .memory import MemoryService, group_id_for
 from .persona import PersonaStore
+from .tools.reminders import ReminderStore
 
 log = logging.getLogger(__name__)
 
@@ -54,6 +55,8 @@ class MemoryBot(discord.Client):
         self.chat = ChatResponder(settings, self.limiter)
         # 이름·페르소나: 관리 웹 > persona.md > .env > 기본값 (재시작 없이 반영)
         self.persona = PersonaStore(settings, lambda: self.memory.redis if self.memory.available else None)
+        self.reminders = ReminderStore(lambda: self.memory.redis if self.memory.available else None)
+        self._reminder_task: asyncio.Task | None = None
         self.batcher = EpisodeBatcher(settings, self.memory.save_episode,
                                       on_event=self.memory.log_event)
         # 단기 기억: 채널별 최근 N개 (인메모리)
@@ -81,6 +84,7 @@ class MemoryBot(discord.Client):
         except Exception as exc:  # noqa: BLE001
             log.warning("슬래시 명령 동기화 실패(봇은 계속 동작): %s", exc)
         self._status_task = asyncio.create_task(self._status_loop())
+        self._reminder_task = asyncio.create_task(self._reminder_loop())
 
     async def on_ready(self) -> None:
         log.info("로그인: %s (id=%s) — 서버 %d개, 모델 %s", self.user, self.user.id,
@@ -92,11 +96,13 @@ class MemoryBot(discord.Client):
             return
         self._closing = True
         log.info("종료 중... 남은 대화 버퍼를 장기 기억에 저장합니다.")
-        if self._status_task:
-            self._status_task.cancel()
+        for task in (self._status_task, self._reminder_task):
+            if task:
+                task.cancel()
         try:
             await self.batcher.shutdown(timeout=100)
         finally:
+            await self.chat.aclose()
             await self.memory.close()
             await super().close()
 
@@ -111,6 +117,31 @@ class MemoryBot(discord.Client):
             except Exception:  # noqa: BLE001
                 pass
             await asyncio.sleep(30)
+
+    async def _reminder_loop(self) -> None:
+        await self.wait_until_ready()
+        while True:
+            try:
+                for item in await self.reminders.pop_due():
+                    await self._deliver_reminder(item)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("리마인더 처리 오류: %s", exc)
+            await asyncio.sleep(15)
+
+    async def _deliver_reminder(self, item: dict) -> None:
+        text = f"⏰ <@{item['user_id']}> 리마인더: {item['text']}"
+        mentions = discord.AllowedMentions(users=True, everyone=False, roles=False)
+        try:
+            channel = self.get_channel(item["channel_id"]) or await self.fetch_channel(item["channel_id"])
+            await channel.send(text, allowed_mentions=mentions)
+        except Exception:  # noqa: BLE001 - 채널이 없어졌으면 DM 으로라도
+            try:
+                user = self.get_user(item["user_id"]) or await self.fetch_user(item["user_id"])
+                await user.send(f"⏰ 리마인더: {item['text']}")
+            except Exception as exc:  # noqa: BLE001
+                log.warning("리마인더 전달 실패 %s: %s", item.get("id"), exc)
+                return
+        log.info("⏰ 리마인더 전달: %s", item.get("id"))
 
     def _status(self) -> dict:
         return {
@@ -205,6 +236,11 @@ class MemoryBot(discord.Client):
                     current=current,
                     memory=memory_ctx,
                     persona=persona,
+                    tool_ctx=self.chat.tool_context(
+                        memory=self.memory, reminders=self.reminders, group_id=gid,
+                        channel_id=message.channel.id, user_id=message.author.id,
+                        user_name=speaker, is_dm=message.guild is None,
+                    ),
                 )
             chunks = split_message(reply_text)
             await message.reply(chunks[0], mention_author=False)
