@@ -17,11 +17,7 @@ from .memory import MemoryContext
 
 log = logging.getLogger(__name__)
 
-DEFAULT_PERSONA = (
-    "너는 친근하고 센스 있는 디스코드 친구다. 사람들과 나눈 대화를 오래 기억하고, "
-    "적절한 순간에 자연스럽게 떠올려 대화를 이어간다. 기본적으로 한국어 반말 대신 "
-    "편안한 존댓말을 쓰되, 상대가 반말을 쓰면 맞춰도 좋다."
-)
+from .persona import DEFAULT_PERSONA  # noqa: E402
 
 
 @dataclass
@@ -44,11 +40,14 @@ class ChatResponder:
             else None
         )
 
-    def build_system_prompt(self, *, bot_name: str, place: str, memory: MemoryContext) -> str:
+    def build_system_prompt(self, *, bot_name: str, place: str, memory: MemoryContext,
+                            persona: str | None = None) -> str:
         now = datetime.now(self._tz).strftime("%Y-%m-%d (%a) %H:%M KST")
         parts = [
             f"너는 '{place}'에서 활동하는 AI '{bot_name}'이다.",
-            self.s.bot_persona or DEFAULT_PERSONA,
+            "",
+            "[페르소나 — 말투와 성격은 이것을 따른다]",
+            persona or DEFAULT_PERSONA,
             "",
             "규칙:",
             "- [장기 기억]은 과거 대화에서 추출한 사실이다. 지금 대화와 관련 있을 때만 자연스럽게 활용하라.",
@@ -85,8 +84,10 @@ class ChatResponder:
         history: list[ShortLine],
         current: ShortLine,
         memory: MemoryContext,
+        persona: str | None = None,
     ) -> str:
-        system_prompt = self.build_system_prompt(bot_name=bot_name, place=place, memory=memory)
+        system_prompt = self.build_system_prompt(bot_name=bot_name, place=place, memory=memory,
+                                                 persona=persona)
         user_content = self.build_user_content(history, current)
         config = types.GenerateContentConfig(
             system_instruction=system_prompt,

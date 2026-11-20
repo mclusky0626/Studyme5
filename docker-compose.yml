@@ -5,6 +5,9 @@ x-app: &app
   image: memory-bot:latest
   restart: unless-stopped
   env_file: .env
+  volumes:
+    # config/persona.md 를 메모장으로 고치면 몇 초 안에 반영 (폴더째 마운트)
+    - ./config:/app/config:ro
   depends_on:
     falkordb:
       condition: service_started  # 앱이 연결될 때까지 자체 재시도함
@@ -43,11 +46,12 @@ services:
       FALKORDB_PORT: "6379"
       DATA_DIR: /app/data
     volumes:
+      - ./config:/app/config:ro
       - bot_data:/app/data
     # docker stop 시 남은 대화 버퍼를 장기 기억에 저장할 시간을 준다
     stop_grace_period: 2m
 
-  # 기억 관리 웹 (http://<홈서버>:8080)
+  # 기억 관리 웹 (http://<홈서버>:8090)
   admin:
     <<: *app
     command: ["python", "-m", "app.admin"]
@@ -57,7 +61,7 @@ services:
       ADMIN_HOST: 0.0.0.0
       ADMIN_PORT: "8000"
     ports:
-      - "${ADMIN_WEB_PORT:-8080}:8000"
+      - "${ADMIN_WEB_PORT:-8090}:8000"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"]
       interval: 30s

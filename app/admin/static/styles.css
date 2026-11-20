@@ -416,6 +416,28 @@ div.vis-tooltip {
 
 .only-mobile { display: none; }
 
+/* ------------------------------------------------------------------ settings */
+.settings-btn { display: inline-flex; align-items: center; gap: 4px; }
+.settings-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
+.settings-head h1 { font-size: 22px; font-weight: 800; }
+.settings-head p { margin: 4px 0 0; }
+.source-badge { font-size: 12px; font-weight: 700; padding: 4px 10px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); }
+.settings-grid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 14px; align-items: start; }
+.settings-card { padding: 18px; display: flex; flex-direction: column; gap: 8px; }
+.settings-card .input { width: 100%; }
+.field-label { font-weight: 700; font-size: 13px; }
+.field-row { display: flex; justify-content: space-between; align-items: baseline; margin-top: 10px; }
+.char-count { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.char-count.over { color: var(--danger); }
+textarea.persona-input { min-height: 320px; font-size: 14px; line-height: 1.6; }
+.preset-row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; font-size: 12.5px; }
+.settings-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
+.card-title { font-size: 15px; }
+.preview { background: var(--surface-2); border-radius: 12px; padding: 12px 14px; white-space: pre-wrap; word-break: break-word; min-height: 64px; }
+.preview .who { font-weight: 700; color: var(--accent); display: block; margin-bottom: 4px; }
+.priority { margin: 0; padding-left: 20px; color: var(--muted); font-size: 13px; line-height: 1.9; }
+.priority b { color: var(--text); }
+
 /* ------------------------------------------------------------------ responsive */
 @media (max-width: 900px) {
   .only-mobile { display: inline-grid; }
@@ -431,8 +453,10 @@ div.vis-tooltip {
   .brand-sub { display: none; }
   .fact-card { grid-template-columns: minmax(0, 1fr); }
   .fact-actions { grid-row: auto; grid-column: 1; justify-content: flex-start; }
+  .settings-grid { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 520px) {
+  .hide-sm { display: none; }
   .status-pill .label { display: none; }
   .space-title h1 { font-size: 19px; }
   .legend { display: none; }

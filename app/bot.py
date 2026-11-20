@@ -15,6 +15,7 @@ from .chat import ChatResponder, ShortLine
 from .config import Settings
 from .gemini_resilience import RateLimiter
 from .memory import MemoryService, group_id_for
+from .persona import PersonaStore
 
 log = logging.getLogger(__name__)
 
@@ -51,6 +52,8 @@ class MemoryBot(discord.Client):
         self.limiter = RateLimiter(settings.gemini_rpm)
         self.memory = MemoryService(settings, self.limiter)
         self.chat = ChatResponder(settings, self.limiter)
+        # 이름·페르소나: 관리 웹 > persona.md > .env > 기본값 (재시작 없이 반영)
+        self.persona = PersonaStore(settings, lambda: self.memory.redis if self.memory.available else None)
         self.batcher = EpisodeBatcher(settings, self.memory.save_episode,
                                       on_event=self.memory.log_event)
         # 단기 기억: 채널별 최근 N개 (인메모리)
@@ -133,13 +136,6 @@ class MemoryBot(discord.Client):
             return gid, guild.name, "guild", f"Discord 서버 '{guild.name}' #{ch_name}"
         return gid, f"DM · {user.name}", "dm", f"Discord DM ({user.name})"
 
-    def _bot_name(self, guild: discord.Guild | None) -> str:
-        if self.s.bot_name:
-            return self.s.bot_name
-        if guild and guild.me:
-            return guild.me.display_name
-        return self.user.display_name if self.user else "bot"
-
     async def _ensure_space(self, gid: str, name: str, kind: str) -> None:
         if gid not in self._registered_spaces:
             self._registered_spaces.add(gid)
@@ -198,15 +194,17 @@ class MemoryBot(discord.Client):
             return
 
         reply_text: str | None = None
+        bot_name, persona = await self.persona.get()
         try:
             async with message.channel.typing():
                 memory_ctx = await self.memory.search(gid, f"{speaker} {text}")
                 reply_text = await self.chat.reply(
-                    bot_name=self._bot_name(message.guild),
+                    bot_name=bot_name,
                     place=space_name,
                     history=snapshot,
                     current=current,
                     memory=memory_ctx,
+                    persona=persona,
                 )
             chunks = split_message(reply_text)
             await message.reply(chunks[0], mention_author=False)
@@ -225,7 +223,6 @@ class MemoryBot(discord.Client):
         self.batcher.add(speaker=speaker, text=text, at=message.created_at, direct=True,
                          **add_kwargs)
         if reply_text:
-            bot_name = self._bot_name(message.guild)
             history.append(ShortLine(speaker=bot_name, text=reply_text, is_bot=True))
             self.batcher.add(speaker=bot_name, text=reply_text, is_bot=True, **add_kwargs)
 

@@ -13,6 +13,7 @@ COPY requirements.txt .
 RUN pip install -r requirements.txt
 
 COPY app ./app
+COPY config ./config
 
 # 실패한 에피소드 보관용 디렉터리 (볼륨 마운트), 루트가 아닌 사용자로 실행
 RUN useradd --create-home --uid 1000 bot \

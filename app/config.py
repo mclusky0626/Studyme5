@@ -108,6 +108,7 @@ class Settings:
     # --- 봇 ---
     bot_persona: str | None
     bot_name: str | None
+    persona_file: Path
     dev_guild_id: int | None
     data_dir: Path
     log_level: str
@@ -155,7 +156,8 @@ class Settings:
             gemini_max_retries=_int("GEMINI_MAX_RETRIES", 5),
             episode_max_retries=_int("EPISODE_MAX_RETRIES", 4),
             bot_persona=_env("BOT_PERSONA"),
-            bot_name=_env("BOT_NAME", default="라스페치아"),
+            bot_name=_env("BOT_NAME"),
+            persona_file=Path(_env("PERSONA_FILE", default=str(Path(__file__).resolve().parent.parent / "config" / "persona.md"))),
             dev_guild_id=int(dev_guild) if dev_guild else None,
             data_dir=Path(_env("DATA_DIR", default=str(Path(__file__).resolve().parent.parent / "data"))),
             log_level=_env("LOG_LEVEL", default="INFO").upper(),

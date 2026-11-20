@@ -202,6 +202,7 @@
   }
 
   function showWelcome() {
+    $("#settingsView").classList.add("hidden");
     $("#welcome").classList.remove("hidden");
     $("#spaceView").classList.add("hidden");
     closeDrawer();
@@ -225,6 +226,7 @@
     state.gid = gid;
     state.tab = tab || state.tab || "graph";
     $("#welcome").classList.add("hidden");
+    $("#settingsView").classList.add("hidden");
     $("#spaceView").classList.remove("hidden");
     closeDrawer();
     closeSidebar();
@@ -706,6 +708,80 @@
     } catch (e) { toast(e.message, "error"); }
   });
 
+  // ---------------------------------------------------------------- bot settings (persona)
+  const PRESETS = {
+    friendly: "너는 디스코드 서버에서 함께 지내는 다정한 친구다.\n사람들과 나눈 대화를 오래 기억하고, 적절한 순간에 자연스럽게 떠올려 근황을 챙긴다.\n\n말투:\n- 편안한 존댓말. 상대가 반말을 쓰면 반말로 맞춘다.\n- 답은 1~4문장으로 짧게, 이모지는 가끔.\n\n성격:\n- 공감을 먼저 하고, 조언은 물어볼 때만 한다.\n- 모르는 건 솔직하게 되묻는다.",
+    tsundere: "너는 츤데레 성격의 디스코드 친구다.\n겉으로는 퉁명스럽게 굴지만 사실 상대를 많이 챙기고, 예전에 들은 이야기를 은근슬쩍 기억해서 꺼낸다.\n\n말투:\n- 반말. \"딱히 너를 위해서 기억한 건 아니거든?\" 같은 말투.\n- 짧게 1~3문장.\n\n규칙:\n- 진짜로 상처 주는 말은 하지 않는다.\n- 상대가 힘들어 보이면 츤데레를 잠시 내려놓고 진심으로 위로한다.",
+    butler: "너는 서버 사람들을 모시는 정중한 집사다.\n주인님들의 취향과 일정, 지난 이야기를 세심하게 기억해 두었다가 필요한 순간에 조용히 상기시켜 드린다.\n\n말투:\n- 매우 정중한 존댓말. 상대를 '주인님' 또는 이름 뒤에 '님'을 붙여 부른다.\n- 차분하고 간결하게 2~4문장.\n\n성격:\n- 과장하지 않고, 모르는 것은 \"확인해 보겠습니다\"라고 솔직하게 말한다.",
+    mentor: "너는 친절한 공부 멘토다.\n각 사람이 무엇을 공부하는지, 어디서 막혔는지, 시험·마감 일정을 기억하고 진도를 챙겨 준다.\n\n말투:\n- 편안한 존댓말, 격려를 아끼지 않는다.\n- 설명이 필요할 땐 단계별로, 그 외엔 짧게.\n\n규칙:\n- 정답을 바로 주기보다 힌트로 스스로 풀게 돕는다.\n- 확실하지 않은 지식은 확실하지 않다고 말한다.",
+  };
+  const SOURCE_LABEL = { web: "관리 웹에서 설정한 값 사용 중", file: "config/persona.md 파일 사용 중", env: ".env 값 사용 중", default: "기본값 사용 중" };
+
+  function updatePersonaCount() {
+    const n = $("#personaInput").value.length;
+    const el = $("#personaCount");
+    el.textContent = `${n} / 4000`;
+    el.classList.toggle("over", n > 4000);
+  }
+
+  function fillPersona(info) {
+    $("#botNameInput").value = info.name || "";
+    $("#personaInput").value = info.persona || "";
+    $("#personaSource").textContent = SOURCE_LABEL[info.persona_source] || info.persona_source;
+    $("#personaFileHint").textContent = info.file_persona
+      ? "config/persona.md 에도 페르소나가 있어요. '파일 값으로 되돌리기'를 누르면 그 내용이 쓰입니다."
+      : "config/persona.md 가 비어 있어, 되돌리면 기본값이 쓰입니다.";
+    updatePersonaCount();
+  }
+
+  async function showSettings() {
+    state.gid = null;
+    renderSpaces();
+    closeDrawer();
+    closeSidebar();
+    $("#welcome").classList.add("hidden");
+    $("#spaceView").classList.add("hidden");
+    $("#settingsView").classList.remove("hidden");
+    history.replaceState(null, "", "#settings");
+    try { fillPersona(await api("/api/persona")); }
+    catch (e) { toast(`설정 로드 실패: ${e.message}`, "error"); }
+  }
+
+  $("#settingsBtn").addEventListener("click", showSettings);
+  $("#personaInput").addEventListener("input", updatePersonaCount);
+  $$("[data-preset]").forEach((b) => b.addEventListener("click", async () => {
+    if ($("#personaInput").value.trim()) {
+      const ok = await modal({ title: "예시로 바꾸기", html: "<p>지금 입력된 페르소나를 예시로 덮어씁니다. (저장 전까지는 실제로 바뀌지 않아요)</p>", okText: "덮어쓰기" });
+      if (!ok) return;
+    }
+    $("#personaInput").value = PRESETS[b.dataset.preset];
+    updatePersonaCount();
+  }));
+  $("#personaSave").addEventListener("click", async () => {
+    try {
+      const info = await api("/api/persona", { method: "PUT", body: JSON.stringify({ name: $("#botNameInput").value, persona: $("#personaInput").value }) });
+      fillPersona(info);
+      toast("저장했어요. 다음 답변부터 반영됩니다.", "ok");
+    } catch (e) { toast(e.message, "error"); }
+  });
+  $("#personaReset").addEventListener("click", async () => {
+    const ok = await modal({ title: "파일 값으로 되돌리기", html: "<p>관리 웹에서 저장한 이름·페르소나를 지우고 <code>config/persona.md</code>(없으면 기본값)로 돌아갑니다.</p>", okText: "되돌리기" });
+    if (!ok) return;
+    try { fillPersona(await api("/api/persona/reset", { method: "POST" })); toast("되돌렸어요.", "ok"); }
+    catch (e) { toast(e.message, "error"); }
+  });
+  $("#personaTestForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const msg = $("#personaTestMsg").value.trim();
+    if (!msg) return;
+    const out = $("#personaPreview");
+    out.innerHTML = '<span class="muted">생각 중…</span>';
+    try {
+      const res = await api("/api/persona/test", { method: "POST", body: JSON.stringify({ name: $("#botNameInput").value, persona: $("#personaInput").value, message: msg }) });
+      out.innerHTML = `<span class="who">${esc($("#botNameInput").value || "봇")}</span>${esc(res.reply)}`;
+    } catch (err) { out.innerHTML = `<span class="danger-text">${esc(err.message)}</span>`; }
+  });
+
   // ---------------------------------------------------------------- sidebar (mobile)
   function closeSidebar() { $("#sidebar").classList.remove("open"); $("#scrim").classList.add("hidden"); }
   $("#menuBtn").addEventListener("click", () => {
@@ -735,7 +811,8 @@
     } catch { /* ignore */ }
     await Promise.all([loadSpaces(), loadStatus()]);
     const [gid, tab] = decodeURIComponent(location.hash.slice(1)).split("/");
-    if (gid && state.spaces.some((s) => s.group_id === gid)) selectSpace(gid, tab || "graph");
+    if (gid === "settings") showSettings();
+    else if (gid && state.spaces.some((s) => s.group_id === gid)) selectSpace(gid, tab || "graph");
     setInterval(loadStatus, 15000);
     setInterval(() => { if (!document.hidden) loadSpaces(); }, 60000);
   }

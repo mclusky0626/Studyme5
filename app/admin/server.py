@@ -15,7 +15,9 @@ from pydantic import BaseModel, Field
 
 from ..config import settings
 from ..gemini_resilience import RateLimiter
-from ..memory import MemoryService
+from ..chat import ChatResponder, ShortLine
+from ..memory import MemoryContext, MemoryService
+from ..persona import MAX_NAME_CHARS, MAX_PERSONA_CHARS, PersonaStore
 from .repo import GraphRepo
 
 log = logging.getLogger(__name__)
@@ -34,7 +36,16 @@ class SpaceDelete(BaseModel):
     confirm: str
 
 
-def create_app(repo: GraphRepo | None = None) -> FastAPI:
+class PersonaUpdate(BaseModel):
+    name: str = Field(default="", max_length=MAX_NAME_CHARS)
+    persona: str = Field(default="", max_length=MAX_PERSONA_CHARS)
+
+
+class PersonaTest(PersonaUpdate):
+    message: str = Field(min_length=1, max_length=500)
+
+
+def create_app(repo: GraphRepo | None = None, persona: PersonaStore | None = None) -> FastAPI:
     """repo 를 주입하면(테스트) FalkorDB 연결 없이 동작한다."""
 
     @asynccontextmanager
@@ -44,8 +55,11 @@ def create_app(repo: GraphRepo | None = None) -> FastAPI:
             memory = MemoryService(settings, RateLimiter(settings.gemini_rpm))
             await memory.start(required=True)
             app.state.repo = GraphRepo(memory)
+            app.state.persona = PersonaStore(settings, lambda: memory.redis)
         else:
             app.state.repo = repo
+            app.state.persona = persona or PersonaStore(settings, lambda: None)
+        app.state.chat = ChatResponder(settings, RateLimiter(0)) if settings.gemini_api_key else None
         if not settings.admin_password:
             log.warning("⚠️  ADMIN_PASSWORD 가 비어 있어 관리 웹이 인증 없이 열려 있습니다.")
         yield
@@ -95,6 +109,38 @@ def create_app(repo: GraphRepo | None = None) -> FastAPI:
         return {"auth": bool(settings.admin_password), "model": settings.llm_model,
                 "embedding_model": settings.embedding_model,
                 "search_enabled": bool(settings.gemini_api_key)}
+
+    # ---------------------------------------------------------------- 봇 설정 (이름·페르소나)
+    @app.get("/api/persona")
+    async def get_persona(request: Request):
+        return await request.app.state.persona.info()
+
+    @app.put("/api/persona")
+    async def put_persona(request: Request, body: PersonaUpdate):
+        try:
+            await request.app.state.persona.save(body.name, body.persona)
+        except RuntimeError as exc:
+            raise HTTPException(503, str(exc)) from exc
+        return await request.app.state.persona.info()
+
+    @app.post("/api/persona/reset")
+    async def reset_persona(request: Request):
+        await request.app.state.persona.reset()
+        return await request.app.state.persona.info()
+
+    @app.post("/api/persona/test")
+    async def test_persona(request: Request, body: PersonaTest):
+        chat: ChatResponder | None = request.app.state.chat
+        if chat is None:
+            raise HTTPException(400, "미리보기에는 GEMINI_API_KEY 가 필요합니다")
+        info = await request.app.state.persona.info()
+        name = body.name.strip() or info["name"]
+        reply = await chat.reply(
+            bot_name=name, place="미리보기", history=[],
+            current=ShortLine(speaker="관리자", text=body.message.strip()),
+            memory=MemoryContext(), persona=body.persona.strip() or info["persona"],
+        )
+        return {"reply": reply}
 
     @app.get("/api/status")
     async def status(request: Request):
