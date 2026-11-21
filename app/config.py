@@ -63,6 +63,14 @@ def _bool(name: str, default: bool) -> bool:
     return value.lower() in {"1", "true", "yes", "y", "on"}
 
 
+def _user_mode() -> str:
+    """USER_MEMORY_MODE=full|lite|off. 예전 설정 USER_MEMORY=false 는 off 로 취급."""
+    mode = (_env("USER_MEMORY_MODE") or "").lower()
+    if mode in {"full", "lite", "off"}:
+        return mode
+    return "full" if _bool("USER_MEMORY", True) else "off"
+
+
 @dataclass(frozen=True)
 class Settings:
     # --- 비밀값 ---
@@ -99,7 +107,11 @@ class Settings:
     capture_all_messages: bool
     memory_search_limit: int
     memory_node_limit: int
-    user_memory: bool
+    user_memory: bool           # off 가 아니면 True
+    user_memory_mode: str       # full | lite | off
+    user_lite_batch_messages: int
+    user_lite_idle_seconds: float
+    user_lite_bot_chars: int
 
     # --- 백그라운드 / 예약 작업 (조사 한도) ---
     tasks_enabled: bool
@@ -175,7 +187,11 @@ class Settings:
             capture_all_messages=_bool("CAPTURE_ALL_MESSAGES", False),
             memory_search_limit=_int("MEMORY_SEARCH_LIMIT", 8),
             memory_node_limit=_int("MEMORY_NODE_LIMIT", 4),
-            user_memory=_bool("USER_MEMORY", True),
+            user_memory=_user_mode() != "off",
+            user_memory_mode=_user_mode(),
+            user_lite_batch_messages=_int("USER_LITE_BATCH_MESSAGES", 16),
+            user_lite_idle_seconds=_float("USER_LITE_IDLE_SECONDS", 600.0),
+            user_lite_bot_chars=_int("USER_LITE_BOT_CHARS", 120),
             tasks_enabled=_bool("TASKS_ENABLED", True),
             task_model=_env("TASK_MODEL", default=base_model),
             task_max_steps=_int("TASK_MAX_STEPS", 12),

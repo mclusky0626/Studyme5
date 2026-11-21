@@ -76,6 +76,9 @@ class _Buffer:
     chars: int = 0
     timer: asyncio.TimerHandle | None = None
     extraction_hint: str | None = None
+    max_messages: int | None = None     # 버퍼별 묶음 크기 (없으면 전역 설정)
+    idle_seconds: float | None = None
+    bot_line_max: int | None = None     # 봇 답변을 이 길이로 잘라 저장 (lite 개인 기억)
 
 
 EventSink = Callable[[dict[str, Any]], Awaitable[None]]
@@ -117,13 +120,16 @@ class EpisodeBatcher:
         is_bot: bool = False,
         direct: bool = False,
         extraction_hint: str | None = None,
+        max_messages: int | None = None,
+        idle_seconds: float | None = None,
+        bot_line_max: int | None = None,
     ) -> bool:
         """메시지를 버퍼에 추가한다. 저장 대상이 아니면 False. (동기 함수 — 절대 블로킹하지 않음)"""
         if self._closing:
             return False
         if not should_store(text, direct=direct, is_bot=is_bot, min_chars=self.s.min_message_chars):
             return False
-        limit = BOT_LINE_MAX if is_bot else USER_LINE_MAX
+        limit = (bot_line_max or BOT_LINE_MAX) if is_bot else USER_LINE_MAX
         body = clean_text(text)
         if len(body) > limit:
             body = body[:limit] + "…"
@@ -131,12 +137,13 @@ class EpisodeBatcher:
         buf = self._buffers.get(key)
         if buf is None:
             buf = _Buffer(group_id=group_id, channel_label=channel_label,
-                          source_description=source_description, extraction_hint=extraction_hint)
+                          source_description=source_description, extraction_hint=extraction_hint,
+                          max_messages=max_messages, idle_seconds=idle_seconds, bot_line_max=bot_line_max)
             self._buffers[key] = buf
         buf.lines.append(_Line(speaker=speaker, text=body, at=at or datetime.now(timezone.utc)))
         buf.chars += len(body)
 
-        if len(buf.lines) >= self.s.batch_max_messages or buf.chars >= self.s.batch_max_chars:
+        if len(buf.lines) >= (buf.max_messages or self.s.batch_max_messages) or buf.chars >= self.s.batch_max_chars:
             self.flush(key, reason="size")
         else:
             self._arm_timer(key, buf)
@@ -147,7 +154,7 @@ class EpisodeBatcher:
         if buf.timer is not None:
             buf.timer.cancel()
         loop = asyncio.get_running_loop()
-        buf.timer = loop.call_later(self.s.batch_idle_seconds, self.flush, key, "idle")
+        buf.timer = loop.call_later(buf.idle_seconds or self.s.batch_idle_seconds, self.flush, key, "idle")
 
     # ------------------------------------------------------------------ flush
     def flush(self, key: str, reason: str = "manual") -> Episode | None:

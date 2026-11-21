@@ -184,6 +184,7 @@ class MemoryBot(discord.Client):
             "embedding_model": self.s.embedding_model,
             "capture_all_messages": self.s.capture_all_messages,
             "user_memory": self.s.user_memory,
+            "user_memory_mode": self.s.user_memory_mode,
             "memory_online": self.memory.available,
             "tasks_running": sum(t["status"] == "running" for t in tasks),
             "tasks_queued": sum(t["status"] == "queued" for t in tasks),
@@ -309,6 +310,12 @@ class MemoryBot(discord.Client):
             user_buf = dict(key=f"{ugid}:all", group_id=ugid, channel_label=f"{uname} · {where}",
                             source_description=f"{uname}와(과)의 대화 ({where})",
                             extraction_hint=user_extraction_hint(uname))
+            # lite: 서버 대화를 개인 공간에 넣을 때는 더 크게 묶고, 봇 답변은 짧은 맥락만 남겨 토큰 절약
+            # (DM 은 개인 공간에만 저장되므로 중복이 없어 그대로 저장)
+            if message.guild is not None and self.s.user_memory_mode == "lite":
+                user_buf.update(max_messages=self.s.user_lite_batch_messages,
+                                idle_seconds=self.s.user_lite_idle_seconds,
+                                bot_line_max=self.s.user_lite_bot_chars)
             await self._ensure_space(ugid, f"👤 {uname}", "user")
 
         if not direct:

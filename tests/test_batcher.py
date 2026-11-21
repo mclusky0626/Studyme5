@@ -156,3 +156,37 @@ async def test_call_with_retry(monkeypatch):
     monkeypatch.setattr("app.gemini_resilience.asyncio.sleep", lambda s: real_sleep(0))
     assert await call_with_retry(flaky, limiter=RateLimiter(0), max_retries=5, what="t") == "ok"
     assert attempts == 3
+
+
+@pytest.mark.asyncio
+async def test_per_buffer_size_and_bot_trim(tmp_path):
+    saved = []
+
+    async def saver(ep):
+        saved.append(ep)
+
+    b = EpisodeBatcher(make_settings(tmp_path, batch_max_messages=4), saver)
+    lite = dict(max_messages=6, idle_seconds=60, bot_line_max=20)
+    for i in range(5):
+        b.add(key="u", group_id="user-1", speaker="건우", text=f"개인 기억용 사용자 발언 {i}번입니다",
+              channel_label="lite", source_description="t", direct=True, **lite)
+    await asyncio.sleep(0.02)
+    assert saved == []  # 전역 4마디가 아니라 버퍼 설정 6마디 기준
+    b.add(key="u", group_id="user-1", speaker="봇", text="아주 긴 봇 답변 " * 20, is_bot=True,
+          channel_label="lite", source_description="t", **lite)
+    await asyncio.sleep(0.02)
+    assert len(saved) == 1 and saved[0].message_count == 6
+    bot_line = saved[0].body.splitlines()[-1]
+    assert len(bot_line) <= len("봇: ") + 21  # 20자 + 말줄임표
+
+
+def test_user_memory_mode_parsing(monkeypatch):
+    from app import config
+
+    monkeypatch.setenv("USER_MEMORY_MODE", "lite")
+    assert config._user_mode() == "lite"
+    monkeypatch.setenv("USER_MEMORY_MODE", "")
+    monkeypatch.setenv("USER_MEMORY", "false")
+    assert config._user_mode() == "off"
+    monkeypatch.delenv("USER_MEMORY")
+    assert config._user_mode() == "full"
