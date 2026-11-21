@@ -26,6 +26,7 @@
       <div class="status-pill" id="botStatus" title="봇 상태">
         <span class="dot"></span><span class="label">확인 중…</span>
       </div>
+      <button class="btn settings-btn" id="tasksBtn" title="백그라운드·예약 작업">📋<span class="hide-sm"> 작업</span></button>
       <button class="btn settings-btn" id="settingsBtn" title="봇 이름·페르소나 설정">⚙<span class="hide-sm"> 봇 설정</span></button>
       <button class="icon-btn" id="themeBtn" aria-label="테마 전환" title="테마 전환">◐</button>
       <button class="icon-btn" id="refreshBtn" aria-label="새로고침" title="새로고침">↻</button>
@@ -60,6 +61,26 @@
           <p>디스코드 서버(<code>guild-…</code>)와 DM(<code>dm-…</code>)마다 기억이 완전히 분리된 그래프로 저장됩니다.</p>
           <p class="muted">봇과 대화한 뒤 <b>8마디</b>가 쌓이거나 <b>90초</b> 동안 대화가 없으면 자동으로 저장돼요.</p>
         </div>
+      </section>
+
+      <section class="settings-view hidden" id="tasksView">
+        <div class="settings-head">
+          <div>
+            <h1>작업</h1>
+            <p class="muted">디스코드에서 맡긴 백그라운드 조사와 예약 작업입니다. 10초마다 새로고침됩니다.</p>
+          </div>
+        </div>
+        <div class="toolbar">
+          <label class="select-wrap">상태
+            <select id="taskFilter">
+              <option value="active">진행·대기·예약</option>
+              <option value="all">전체</option>
+              <option value="done">완료</option>
+              <option value="failed">실패·취소</option>
+            </select>
+          </label>
+        </div>
+        <div class="list" id="taskList"></div>
       </section>
 
       <section class="settings-view hidden" id="settingsView">

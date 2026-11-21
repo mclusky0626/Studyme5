@@ -28,6 +28,7 @@ PROMISE_RE = re.compile(
     r"확인해\s*(볼|보고|올)|조사해\s*(볼|보고|올)|정리해\s*서?\s*(보여|알려|드릴|줄)|준비해\s*서?\s*(보여|드릴)|"
     r"곧\s*(보여|알려|정리)|금방\s*(보여|알려|정리|가져))"
 )
+DEFERRING_TOOLS = {"start_background_task", "schedule_task", "set_reminder"}  # 실제로 나중 처리가 예약된 경우
 NUDGE = (
     "[시스템] 방금 답변은 '잠시만요/찾아볼게요/정리해서 보여드릴게요' 같은 약속으로 끝났다. "
     "너는 이 답변 이후에 메시지를 보낼 수 없다. 정보가 더 필요하면 지금 도구를 호출하고, "
@@ -40,7 +41,10 @@ TOOL_GUIDE = """[도구 사용]
 - 숫자 계산은 암산하지 말고 calculate. 날씨는 get_weather(영문 도시명). 환율은 convert_currency.
 - 뉴스·시세·경기 결과·영업시간처럼 최신 정보가 필요하거나 확실하지 않은 사실은 web_search 로 확인한다.
 - "~분 뒤/~시에 알려줘" 는 set_reminder. 고르기·주사위·제비뽑기는 random_pick. D-day·요일은 date_calc.
-- 검색 결과를 쓸 때는 끝에 (출처: 사이트명) 처럼 짧게 밝힌다."""
+- 검색 결과를 쓸 때는 끝에 (출처: 사이트명) 처럼 짧게 밝힌다.
+- 검색·페이지 읽기를 여러 번 해야 하는 깊은 조사나 "조사해서 나중에 알려줘"는 start_background_task 로 맡기고,
+  "작업 #id 로 시작했다, 끝나면 여기에 올리겠다"고 짧게 답한다. 이 경우만 나중에 결과가 자동으로 올라간다.
+- "매일/매주/특정 시각에 ~해줘"(그때 조사·요약이 필요한 일)는 schedule_task. 단순 알림 문구는 set_reminder."""
 
 
 @dataclass
@@ -89,7 +93,8 @@ class ChatResponder:
             "- 너는 메시지당 답장을 한 번만 보낼 수 있다. '잠시만요', '찾아볼게요', '정리해서 보여드릴게요'처럼 "
             "나중을 약속하는 말로 끝내지 말고, 필요한 도구는 지금 호출해서 이 답변 안에서 완성하라.",
             "- 일상 대화는 1~4문장으로 짧게. 단, 정리·목록·예문·비교·자세한 설명을 요청받으면 요청한 분량을 "
-            "끝까지 채워서 답하라 (긴 답변은 자동으로 나눠 전송된다). 디스코드 마크다운(굵게, 목록, 제목)을 써도 된다.",
+            "끝까지 채워서 답하라 (긴 답변은 자동으로 나눠 전송된다). 디스코드 마크다운(굵게, 목록, 제목)을 써도 된다. "
+            "단, 디스코드는 표(| 칸 |)를 지원하지 않으므로 표 대신 목록으로 정리하라.",
             f"- 현재 시각: {now}",
         ]
         if with_tools:
@@ -98,6 +103,11 @@ class ChatResponder:
             parts += ["", "[장기 기억 — 관련 사실]", *(f"- {f}" for f in memory.facts)]
         if memory.entities:
             parts += ["", "[장기 기억 — 관련 인물/대상 요약]", *(f"- {e}" for e in memory.entities)]
+        if memory.personal_facts or memory.personal_entities:
+            parts += ["", "[개인 기억 — 지금 말하는 사람에 대해 서버·DM을 통틀어 기억하는 것]",
+                      *(f"- {f}" for f in memory.personal_facts),
+                      *(f"- {e}" for e in memory.personal_entities),
+                      "(다른 사람도 보는 서버에서는 건강·연애·주소·금전 같은 민감한 개인 기억을 먼저 꺼내지 마라.)"]
         if memory.is_empty():
             parts += ["", "[장기 기억] (이 질문과 관련된 기억 없음)"]
         return "\n".join(parts)
@@ -167,7 +177,8 @@ class ChatResponder:
                 if not calls:
                     draft = (getattr(response, "text", None) or "").strip()
                     # 약속만 하고 끝난 답변이면 한 번 더 기회를 준다 (마지막 단계여도 도구 없이 완성하게)
-                    if not nudged and draft and PROMISE_RE.search(draft[-300:]) and response.candidates:
+                    deferred = tool_ctx is not None and any(n in DEFERRING_TOOLS for n in tool_ctx.used)
+                    if not nudged and not deferred and draft and PROMISE_RE.search(draft[-300:]) and response.candidates:
                         log.info("약속형 답변 감지 → 완성 요청: %s", draft[-120:].replace("\n", " "))
                         nudged = True
                         contents.append(response.candidates[0].content)

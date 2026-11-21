@@ -143,6 +143,16 @@ def create_app(repo: GraphRepo | None = None, persona: PersonaStore | None = Non
         )
         return {"reply": reply}
 
+    @app.get("/api/tasks")
+    async def tasks(request: Request):
+        return await r(request).tasks()
+
+    @app.post("/api/tasks/{task_id}/cancel")
+    async def cancel_task(request: Request, task_id: str):
+        if not await r(request).cancel_task(task_id):
+            raise HTTPException(400, "취소할 수 있는 작업이 아닙니다")
+        return {"ok": True}
+
     @app.get("/api/status")
     async def status(request: Request):
         return await r(request).status()

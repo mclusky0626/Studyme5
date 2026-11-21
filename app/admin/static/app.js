@@ -120,7 +120,7 @@
     episodes: { skip: 0, items: [] },
     meta: {},
   };
-  const KIND_LABEL = { guild: "서버", dm: "DM", other: "기타" };
+  const KIND_LABEL = { guild: "서버", user: "유저", dm: "DM(이전)", other: "기타" };
   const currentSpace = () => state.spaces.find((s) => s.group_id === state.gid);
 
   // ---------------------------------------------------------------- theme
@@ -152,7 +152,7 @@
       pill.classList.toggle("online", st.online);
       pill.classList.toggle("offline", !st.online);
       $(".label", pill).textContent = st.online
-        ? `${b.bot || "봇"} · 대기 ${b.buffered_messages}마디 · 저장 중 ${b.pending_saves}`
+        ? `${b.bot || "봇"} · 대기 ${b.buffered_messages}마디 · 저장 중 ${b.pending_saves}${b.tasks_running ? ` · 작업 ${b.tasks_running}` : ""}`
         : "봇 오프라인";
       pill.title = st.online ? `모델 ${b.chat_model} / 임베딩 ${b.embedding_model}\n마지막 보고 ${fmtDate(b.updated_at)}` : "최근 90초 동안 봇 상태 보고가 없습니다";
       $("#botStats").innerHTML = st.online
@@ -202,7 +202,7 @@
   }
 
   function showWelcome() {
-    $("#settingsView").classList.add("hidden");
+    hideViews();
     $("#welcome").classList.remove("hidden");
     $("#spaceView").classList.add("hidden");
     closeDrawer();
@@ -225,8 +225,7 @@
   function selectSpace(gid, tab) {
     state.gid = gid;
     state.tab = tab || state.tab || "graph";
-    $("#welcome").classList.add("hidden");
-    $("#settingsView").classList.add("hidden");
+    hideViews();
     $("#spaceView").classList.remove("hidden");
     closeDrawer();
     closeSidebar();
@@ -708,6 +707,82 @@
     } catch (e) { toast(e.message, "error"); }
   });
 
+  // ---------------------------------------------------------------- tasks view
+  const TASK_LABEL = { queued: "대기", running: "진행 중", scheduled: "예약", done: "완료", failed: "실패", cancelled: "취소됨", cancel_requested: "취소 중" };
+  let taskTimer = null;
+
+  function hideViews() {
+    ["#welcome", "#spaceView", "#settingsView", "#tasksView"].forEach((s) => $(s).classList.add("hidden"));
+    if (taskTimer) { clearInterval(taskTimer); taskTimer = null; }
+  }
+
+  function taskCard(t) {
+    const active = ["queued", "running", "scheduled", "cancel_requested"].includes(t.status);
+    const meta = [
+      `#${esc(t.id)}`,
+      `👤 ${esc(t.user_name || t.user_id)}`,
+      t.schedule_text ? `🗓️ ${esc(t.schedule_text)}` : `접수 ${esc(ago(t.created * 1000))}`,
+      t.next_run && t.status === "scheduled" ? `다음 ${esc(fmtDate(t.next_run * 1000))}` : "",
+      t.steps ? `${t.steps}단계` : "",
+      t.tokens ? `${Number(t.tokens).toLocaleString()}토큰` : "",
+      t.runs ? `실행 ${t.runs}회` : "",
+      t.status === "running" && t.progress ? `· ${esc(t.progress)}` : "",
+    ].filter(Boolean).map((m) => `<span>${m}</span>`).join("");
+    return `<div class="card task-card">
+      <div class="task-head">
+        <span class="task-status ${esc(t.status)}">${esc(TASK_LABEL[t.status] || t.status)}</span>
+        <span class="task-goal">${esc(t.goal)}</span>
+        ${active ? `<button class="btn sm ghost danger-text" data-cancel-task="${esc(t.id)}">취소</button>` : ""}
+        ${t.result_preview ? `<button class="btn sm ghost" data-toggle-result>결과 보기</button>` : ""}
+      </div>
+      <div class="task-meta">${meta}</div>
+      ${t.error ? `<div class="task-meta danger-text">${esc(t.error)}</div>` : ""}
+      ${t.result_preview ? `<div class="task-result hidden">${esc(t.result_preview)}</div>` : ""}
+    </div>`;
+  }
+
+  async function loadTasks() {
+    try {
+      const all = await api("/api/tasks");
+      const f = $("#taskFilter").value;
+      const groups = { active: ["queued", "running", "scheduled", "cancel_requested"], done: ["done"], failed: ["failed", "cancelled"] };
+      const list = f === "all" ? all : all.filter((t) => groups[f].includes(t.status));
+      $("#taskList").innerHTML = list.length ? list.map(taskCard).join("")
+        : `<div class="empty">${f === "active" ? "진행 중이거나 예약된 작업이 없어요.<br/>디스코드에서 \"~조사해서 알려줘\", \"매일 8시에 ~해줘\" 처럼 맡겨 보세요." : "해당하는 작업이 없어요."}</div>`;
+    } catch (e) { $("#taskList").innerHTML = `<div class="empty small">불러오기 실패: ${esc(e.message)}</div>`; }
+  }
+
+  async function showTasks() {
+    state.gid = null;
+    renderSpaces();
+    closeDrawer();
+    closeSidebar();
+    hideViews();
+    $("#tasksView").classList.remove("hidden");
+    history.replaceState(null, "", "#tasks");
+    await loadTasks();
+    taskTimer = setInterval(() => { if (!document.hidden) loadTasks(); }, 10000);
+  }
+
+  $("#tasksBtn").addEventListener("click", showTasks);
+  $("#taskFilter").addEventListener("change", loadTasks);
+  $("#taskList").addEventListener("click", async (e) => {
+    const tog = e.target.closest("[data-toggle-result]");
+    if (tog) {
+      const box = tog.closest(".task-card").querySelector(".task-result");
+      box.classList.toggle("hidden");
+      box.classList.add("open");
+      tog.textContent = box.classList.contains("hidden") ? "결과 보기" : "결과 접기";
+      return;
+    }
+    const c = e.target.closest("[data-cancel-task]");
+    if (!c) return;
+    const ok = await modal({ title: "작업 취소", html: `<p>작업 #${esc(c.dataset.cancelTask)} 을(를) 취소합니다. 진행 중이면 다음 단계에서 멈춥니다.</p>`, okText: "취소하기", danger: true });
+    if (!ok) return;
+    try { await api(`/api/tasks/${enc(c.dataset.cancelTask)}/cancel`, { method: "POST" }); toast("취소했어요", "ok"); loadTasks(); }
+    catch (err) { toast(err.message, "error"); }
+  });
+
   // ---------------------------------------------------------------- bot settings (persona)
   const PRESETS = {
     friendly: "너는 디스코드 서버에서 함께 지내는 다정한 친구다.\n사람들과 나눈 대화를 오래 기억하고, 적절한 순간에 자연스럽게 떠올려 근황을 챙긴다.\n\n말투:\n- 편안한 존댓말. 상대가 반말을 쓰면 반말로 맞춘다.\n- 답은 1~4문장으로 짧게, 이모지는 가끔.\n\n성격:\n- 공감을 먼저 하고, 조언은 물어볼 때만 한다.\n- 모르는 건 솔직하게 되묻는다.",
@@ -739,8 +814,7 @@
     renderSpaces();
     closeDrawer();
     closeSidebar();
-    $("#welcome").classList.add("hidden");
-    $("#spaceView").classList.add("hidden");
+    hideViews();
     $("#settingsView").classList.remove("hidden");
     history.replaceState(null, "", "#settings");
     try { fillPersona(await api("/api/persona")); }
@@ -812,6 +886,7 @@
     await Promise.all([loadSpaces(), loadStatus()]);
     const [gid, tab] = decodeURIComponent(location.hash.slice(1)).split("/");
     if (gid === "settings") showSettings();
+    else if (gid === "tasks") showTasks();
     else if (gid && state.spaces.some((s) => s.group_id === gid)) selectSpace(gid, tab || "graph");
     setInterval(loadStatus, 15000);
     setInterval(() => { if (!document.hidden) loadSpaces(); }, 60000);

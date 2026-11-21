@@ -22,6 +22,7 @@ if TYPE_CHECKING:  # pragma: no cover
     from ..config import Settings
     from ..gemini_resilience import RateLimiter
     from ..memory import MemoryService
+    from ..tasks import TaskManager
     from .reminders import ReminderStore
 
 log = logging.getLogger(__name__)
@@ -41,6 +42,8 @@ class ToolContext:
     http: "httpx.AsyncClient"
     memory: "MemoryService | None" = None
     reminders: "ReminderStore | None" = None
+    tasks: "TaskManager | None" = None
+    message_id: int | None = None
     group_id: str | None = None
     channel_id: int | None = None
     user_id: int | None = None
@@ -81,7 +84,7 @@ class ToolError(Exception):
 
 
 def _load_modules() -> None:
-    from . import basic, memory_tool, reminders, web  # noqa: F401
+    from . import basic, memory_tool, reminders, tasks_tool, web  # noqa: F401
 
 
 def enabled_names(settings: "Settings") -> set[str]:

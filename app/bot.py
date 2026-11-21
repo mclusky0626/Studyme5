@@ -6,21 +6,35 @@ import asyncio
 import logging
 import re
 from collections import defaultdict, deque
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import discord
 from discord import app_commands
 
+from .agent import run_agent
 from .batcher import EpisodeBatcher
 from .chat import ChatResponder, ShortLine
 from .config import Settings
 from .gemini_resilience import RateLimiter
-from .memory import MemoryService, group_id_for
+from .memory import (
+    MemoryContext,
+    MemoryService,
+    group_id_for,
+    legacy_dm_group_id,
+    user_extraction_hint,
+    user_group_id,
+)
 from .persona import PersonaStore
+from .tasks import Messenger, TaskManager, TaskStore, describe_schedule
+from .tools import ToolError
 from .tools.reminders import ReminderStore
 
 log = logging.getLogger(__name__)
+KST = ZoneInfo("Asia/Seoul")
 
 DISCORD_LIMIT = 1900
+MENTION_USERS = discord.AllowedMentions(users=True, everyone=False, roles=False, replied_user=False)
 
 
 def split_message(text: str, limit: int = DISCORD_LIMIT) -> list[str]:
@@ -39,6 +53,11 @@ def split_message(text: str, limit: int = DISCORD_LIMIT) -> list[str]:
     return chunks
 
 
+def user_label(user: discord.abc.User) -> str:
+    """서버 닉네임과 무관하게 일정한 이름 (유저 기억의 엔티티 이름이 흔들리지 않게)."""
+    return getattr(user, "global_name", None) or user.name
+
+
 class MemoryBot(discord.Client):
     def __init__(self, settings: Settings) -> None:
         intents = discord.Intents.default()
@@ -53,10 +72,13 @@ class MemoryBot(discord.Client):
         self.limiter = RateLimiter(settings.gemini_rpm)
         self.memory = MemoryService(settings, self.limiter)
         self.chat = ChatResponder(settings, self.limiter)
+        redis = lambda: self.memory.redis if self.memory.available else None  # noqa: E731
         # 이름·페르소나: 관리 웹 > persona.md > .env > 기본값 (재시작 없이 반영)
-        self.persona = PersonaStore(settings, lambda: self.memory.redis if self.memory.available else None)
-        self.reminders = ReminderStore(lambda: self.memory.redis if self.memory.available else None)
-        self._reminder_task: asyncio.Task | None = None
+        self.persona = PersonaStore(settings, redis)
+        self.reminders = ReminderStore(redis)
+        self.tasks = TaskManager(settings, TaskStore(redis),
+                                 Messenger(send=self._task_send, edit=self._task_edit),
+                                 agent_runner=self._run_task_agent)
         self.batcher = EpisodeBatcher(settings, self.memory.save_episode,
                                       on_event=self.memory.log_event)
         # 단기 기억: 채널별 최근 N개 (인메모리)
@@ -64,7 +86,7 @@ class MemoryBot(discord.Client):
             lambda: deque(maxlen=settings.short_term_size)
         )
         self._registered_spaces: set[str] = set()
-        self._status_task: asyncio.Task | None = None
+        self._bg: list[asyncio.Task] = []
         self._closing = False
         self._register_commands()
 
@@ -83,8 +105,9 @@ class MemoryBot(discord.Client):
                 log.info("슬래시 명령을 전역 동기화했습니다. (반영까지 최대 1시간)")
         except Exception as exc:  # noqa: BLE001
             log.warning("슬래시 명령 동기화 실패(봇은 계속 동작): %s", exc)
-        self._status_task = asyncio.create_task(self._status_loop())
-        self._reminder_task = asyncio.create_task(self._reminder_loop())
+        self._bg = [asyncio.create_task(self._status_loop()),
+                    asyncio.create_task(self._reminder_loop()),
+                    asyncio.create_task(self._tasks_loop())]
 
     async def on_ready(self) -> None:
         log.info("로그인: %s (id=%s) — 서버 %d개, 모델 %s", self.user, self.user.id,
@@ -96,9 +119,8 @@ class MemoryBot(discord.Client):
             return
         self._closing = True
         log.info("종료 중... 남은 대화 버퍼를 장기 기억에 저장합니다.")
-        for task in (self._status_task, self._reminder_task):
-            if task:
-                task.cancel()
+        for task in self._bg:
+            task.cancel()
         try:
             await self.batcher.shutdown(timeout=100)
         finally:
@@ -112,7 +134,7 @@ class MemoryBot(discord.Client):
                 if not self.memory.available and await self.memory.try_reconnect():
                     log.info("FalkorDB 재연결 성공 — 보관해 둔 대화를 장기 기억에 반영합니다.")
                     await self.batcher.replay_failed()
-                await self.memory.write_status(self._status())
+                await self.memory.write_status(await self._status())
                 await self.memory.prune_cache()
             except Exception:  # noqa: BLE001
                 pass
@@ -128,12 +150,19 @@ class MemoryBot(discord.Client):
                 log.warning("리마인더 처리 오류: %s", exc)
             await asyncio.sleep(15)
 
+    async def _tasks_loop(self) -> None:
+        await self.wait_until_ready()
+        try:
+            await self.tasks.recover()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("작업 복구 실패: %s", exc)
+        await self.tasks.loop()
+
     async def _deliver_reminder(self, item: dict) -> None:
         text = f"⏰ <@{item['user_id']}> 리마인더: {item['text']}"
-        mentions = discord.AllowedMentions(users=True, everyone=False, roles=False)
         try:
             channel = self.get_channel(item["channel_id"]) or await self.fetch_channel(item["channel_id"])
-            await channel.send(text, allowed_mentions=mentions)
+            await channel.send(text, allowed_mentions=MENTION_USERS)
         except Exception:  # noqa: BLE001 - 채널이 없어졌으면 DM 으로라도
             try:
                 user = self.get_user(item["user_id"]) or await self.fetch_user(item["user_id"])
@@ -143,7 +172,8 @@ class MemoryBot(discord.Client):
                 return
         log.info("⏰ 리마인더 전달: %s", item.get("id"))
 
-    def _status(self) -> dict:
+    async def _status(self) -> dict:
+        tasks = await self.tasks.store.all()
         return {
             "bot": str(self.user) if self.user else None,
             "guilds": len(self.guilds),
@@ -151,9 +181,46 @@ class MemoryBot(discord.Client):
             "graph_model": self.s.llm_model,
             "embedding_model": self.s.embedding_model,
             "capture_all_messages": self.s.capture_all_messages,
+            "user_memory": self.s.user_memory,
             "memory_online": self.memory.available,
+            "tasks_running": sum(t["status"] == "running" for t in tasks),
+            "tasks_queued": sum(t["status"] == "queued" for t in tasks),
+            "tasks_scheduled": sum(t["status"] == "scheduled" for t in tasks),
             **self.batcher.stats(),
         }
+
+    # ------------------------------------------------------------------ 백그라운드 작업 연결
+    async def _channel(self, channel_id: int):
+        return self.get_channel(channel_id) or await self.fetch_channel(channel_id)
+
+    async def _task_send(self, channel_id: int, text: str, reply_to: int | None = None,
+                         user_id: int | None = None) -> int | None:
+        channel = await self._channel(channel_id)
+        first_id = None
+        for i, chunk in enumerate(split_message(text)):
+            if i == 0 and reply_to:
+                try:
+                    msg = await channel.get_partial_message(reply_to).reply(
+                        chunk, mention_author=False, allowed_mentions=MENTION_USERS)
+                except discord.HTTPException:  # 원본 메시지가 지워졌으면 그냥 보낸다
+                    msg = await channel.send(chunk, allowed_mentions=MENTION_USERS)
+            else:
+                msg = await channel.send(chunk, allowed_mentions=MENTION_USERS)
+            first_id = first_id or msg.id
+        return first_id
+
+    async def _task_edit(self, channel_id: int, message_id: int, text: str) -> None:
+        channel = await self._channel(channel_id)
+        await channel.get_partial_message(message_id).edit(content=text[:DISCORD_LIMIT])
+
+    async def _run_task_agent(self, task: dict, progress, is_cancelled):
+        bot_name, persona = await self.persona.get()
+        ctx = self.chat.tool_context(memory=self.memory, group_id=task.get("group_id") or None,
+                                     channel_id=task["channel_id"], user_id=task["user_id"],
+                                     user_name=task.get("user_name"), is_dm=task.get("is_dm", False))
+        return await run_agent(self.chat, task["goal"], ctx=ctx, limits=self.tasks.agent_limits(),
+                               bot_name=bot_name, persona=persona, model=self.s.task_model,
+                               on_progress=progress, is_cancelled=is_cancelled)
 
     # ------------------------------------------------------------------ helpers
     def _space(self, message_or_inter) -> tuple[str, str, str, str]:
@@ -165,12 +232,27 @@ class MemoryBot(discord.Client):
         if guild:
             ch_name = getattr(channel, "name", "channel")
             return gid, guild.name, "guild", f"Discord 서버 '{guild.name}' #{ch_name}"
-        return gid, f"DM · {user.name}", "dm", f"Discord DM ({user.name})"
+        return gid, f"👤 {user_label(user)}", "user", f"Discord DM ({user_label(user)})"
 
     async def _ensure_space(self, gid: str, name: str, kind: str) -> None:
         if gid not in self._registered_spaces:
             self._registered_spaces.add(gid)
             await self.memory.register_space(gid, name, kind)
+
+    async def _recall(self, gid: str, user: discord.abc.User, query: str) -> MemoryContext:
+        """서버 기억 + 말하는 사람의 개인 기억(+ 예전 DM 기억)을 함께 찾는다."""
+        ugid = user_group_id(user.id)
+        if gid == ugid:  # DM: 개인 기억이 곧 이 공간
+            main, legacy = await asyncio.gather(self.memory.search(ugid, query),
+                                                self.memory.search(legacy_dm_group_id(user.id), query))
+            main.facts += [f for f in legacy.facts if f not in main.facts]
+            main.entities += [e for e in legacy.entities if e not in main.entities]
+            return main
+        if not self.s.user_memory:
+            return await self.memory.search(gid, query)
+        server, personal = await asyncio.gather(self.memory.search(gid, query),
+                                                self.memory.search(ugid, query))
+        return server.merge_personal(personal)
 
     def _is_direct(self, message: discord.Message) -> bool:
         if message.guild is None:
@@ -213,15 +295,24 @@ class MemoryBot(discord.Client):
         current = ShortLine(speaker=speaker, text=text)
         history.append(current)
 
-        buffer_key = f"{gid}:{message.channel.id}"
         channel_label = f"#{getattr(message.channel, 'name', 'dm')}" if message.guild else "DM"
-        add_kwargs = dict(key=buffer_key, group_id=gid, channel_label=channel_label,
+        server_buf = dict(key=f"{gid}:{message.channel.id}", group_id=gid, channel_label=channel_label,
                           source_description=source)
+        # 유저별 기억: 서버·DM 어디서든 이 사람과 나눈 대화를 개인 공간에도 모은다 (서버 기억은 그대로)
+        uname = user_label(message.author)
+        ugid = user_group_id(message.author.id)
+        user_buf = None
+        if message.guild is None or self.s.user_memory:
+            where = f"{message.guild.name} {channel_label}" if message.guild else "DM"
+            user_buf = dict(key=f"{ugid}:all", group_id=ugid, channel_label=f"{uname} · {where}",
+                            source_description=f"{uname}와(과)의 대화 ({where})",
+                            extraction_hint=user_extraction_hint(uname))
+            await self._ensure_space(ugid, f"👤 {uname}", "user")
 
         if not direct:
             if self.s.capture_all_messages:
                 self.batcher.add(speaker=speaker, text=text, at=message.created_at,
-                                 direct=False, **add_kwargs)
+                                 direct=False, **server_buf)
             return
 
         reply_text: str | None = None
@@ -230,7 +321,7 @@ class MemoryBot(discord.Client):
         log.info("💬 [%s] %s: %s", gid, speaker, text[:80].replace("\n", " "))
         try:
             async with message.channel.typing():
-                memory_ctx = await self.memory.search(gid, f"{speaker} {text}")
+                memory_ctx = await self._recall(gid, message.author, f"{speaker} {text}")
                 reply_text = await self.chat.reply(
                     bot_name=bot_name,
                     place=space_name,
@@ -239,9 +330,9 @@ class MemoryBot(discord.Client):
                     memory=memory_ctx,
                     persona=persona,
                     tool_ctx=self.chat.tool_context(
-                        memory=self.memory, reminders=self.reminders, group_id=gid,
-                        channel_id=message.channel.id, user_id=message.author.id,
-                        user_name=speaker, is_dm=message.guild is None,
+                        memory=self.memory, reminders=self.reminders, tasks=self.tasks, group_id=gid,
+                        channel_id=message.channel.id, user_id=message.author.id, message_id=message.id,
+                        user_name=uname, is_dm=message.guild is None,
                     ),
                 )
             chunks = split_message(reply_text)
@@ -260,43 +351,71 @@ class MemoryBot(discord.Client):
                 pass
 
         # ---- 답변 전송 "이후" 에만 기억 버퍼에 적재 (저장은 백그라운드) ----
-        self.batcher.add(speaker=speaker, text=text, at=message.created_at, direct=True,
-                         **add_kwargs)
+        buffers = [user_buf] if message.guild is None else [server_buf] + ([user_buf] if user_buf else [])
+        for buf in buffers:
+            who = uname if buf is user_buf else speaker
+            self.batcher.add(speaker=who, text=text, at=message.created_at, direct=True, **buf)
+            if reply_text:
+                self.batcher.add(speaker=bot_name, text=reply_text, is_bot=True, **buf)
         if reply_text:
             history.append(ShortLine(speaker=bot_name, text=reply_text, is_bot=True))
-            self.batcher.add(speaker=bot_name, text=reply_text, is_bot=True, **add_kwargs)
 
     # ------------------------------------------------------------------ slash commands
     def _register_commands(self) -> None:
         group = app_commands.Group(name="memory", description="장기 기억 관리")
 
-        @group.command(name="recall", description="이 서버(또는 DM)의 장기 기억에서 검색합니다")
+        def facts_embed(title: str, ctx: MemoryContext) -> discord.Embed:
+            embed = discord.Embed(title=title, color=0x7C5CFF)
+            for name, items in (("서버 기억", ctx.facts), ("인물/대상", ctx.entities),
+                                ("내 개인 기억", ctx.personal_facts), ("개인 기억 요약", ctx.personal_entities)):
+                if items:
+                    embed.add_field(name=name, value="\n".join(f"• {x}" for x in items)[:1024], inline=False)
+            return embed
+
+        @group.command(name="recall", description="이 서버(또는 DM)와 내 개인 기억에서 검색합니다")
         @app_commands.describe(query="찾고 싶은 내용 (예: 내가 좋아하는 음식)")
         async def recall(inter: discord.Interaction, query: str) -> None:
             await inter.response.defer(ephemeral=True, thinking=True)
             gid, *_ = self._space(inter)
-            ctx = await self.memory.search(gid, query)
+            ctx = await self._recall(gid, inter.user, query)
             if ctx.is_empty():
                 await inter.followup.send("관련된 기억을 찾지 못했어요.", ephemeral=True)
                 return
-            embed = discord.Embed(title=f"🔎 '{query[:80]}' 관련 기억", color=0x7C5CFF)
-            if ctx.facts:
-                embed.add_field(name="사실", value="\n".join(f"• {f}" for f in ctx.facts)[:1024],
-                                inline=False)
-            if ctx.entities:
-                embed.add_field(name="인물/대상",
-                                value="\n".join(f"• {e}" for e in ctx.entities)[:1024], inline=False)
-            await inter.followup.send(embed=embed, ephemeral=True)
+            await inter.followup.send(embed=facts_embed(f"🔎 '{query[:80]}' 관련 기억", ctx), ephemeral=True)
+
+        @group.command(name="me", description="봇이 나에 대해 기억하는 것 (나에게만 보임)")
+        async def me(inter: discord.Interaction) -> None:
+            await inter.response.defer(ephemeral=True, thinking=True)
+            name = user_label(inter.user)
+            ctx = await self.memory.search(user_group_id(inter.user.id), f"{name} 취향 계획 경험 관계")
+            if ctx.is_empty():
+                await inter.followup.send("아직 개인 기억이 없어요. 대화를 나누면 쌓여요!", ephemeral=True)
+                return
+            await inter.followup.send(embed=facts_embed(f"👤 {name}에 대한 기억", MemoryContext(
+                personal_facts=ctx.facts, personal_entities=ctx.entities)), ephemeral=True)
+
+        @group.command(name="forget_me", description="내 개인 기억을 전부 삭제합니다 (서버 기억은 유지)")
+        @app_commands.describe(confirm="정말 지우려면 '삭제' 라고 입력")
+        async def forget_me(inter: discord.Interaction, confirm: str) -> None:
+            if confirm.strip() != "삭제":
+                await inter.response.send_message("취소했어요. 지우려면 confirm 에 `삭제` 를 입력하세요.",
+                                                  ephemeral=True)
+                return
+            ok = await self.memory.delete_group(user_group_id(inter.user.id))
+            await inter.response.send_message(
+                "개인 기억을 삭제했어요. (서버 기억은 그대로예요)" if ok else "삭제할 개인 기억이 없어요.",
+                ephemeral=True)
 
         @group.command(name="save", description="이 채널에 쌓인 대화를 지금 바로 장기 기억에 저장합니다")
         async def save(inter: discord.Interaction) -> None:
             gid, *_ = self._space(inter)
-            key = f"{gid}:{inter.channel_id}"
-            count, _ = self.batcher.buffer_info(key)
+            keys = [f"{gid}:{inter.channel_id}", f"{user_group_id(inter.user.id)}:all"]
+            count = sum(self.batcher.buffer_info(k)[0] for k in keys)
             if count == 0:
                 await inter.response.send_message("저장할 대화가 아직 없어요.", ephemeral=True)
                 return
-            self.batcher.flush(key, reason="command")
+            for k in keys:
+                self.batcher.flush(k, reason="command")
             await inter.response.send_message(
                 f"대화 {count}마디를 장기 기억에 저장하는 중이에요. (백그라운드 처리)", ephemeral=True)
 
@@ -306,7 +425,7 @@ class MemoryBot(discord.Client):
             count, chars = self.batcher.buffer_info(f"{gid}:{inter.channel_id}")
             st = self.batcher.stats()
             msg = (
-                f"**기억 공간** `{gid}`\n"
+                f"**기억 공간** `{gid}` · 개인 `{user_group_id(inter.user.id)}`\n"
                 f"• 이 채널 대기 버퍼: {count}마디 / {chars}자 "
                 f"({st['batch_max_messages']}마디 또는 {int(st['batch_idle_seconds'])}초 무응답 시 저장)\n"
                 f"• 저장 진행 중: {st['pending_saves']}건 · 누적 저장 {st['saved']}건 · 실패 {st['failed']}건"
@@ -314,3 +433,48 @@ class MemoryBot(discord.Client):
             await inter.response.send_message(msg, ephemeral=True)
 
         self.tree.add_command(group)
+
+        # -------------------------------------------------------------- /task
+        task_group = app_commands.Group(name="task", description="백그라운드·예약 작업")
+
+        @task_group.command(name="start", description="조사·정리 작업을 백그라운드로 맡깁니다")
+        @app_commands.describe(goal="할 일 (예: 블루아카이브 카스미 대사 한섭/일섭 비교 10개)")
+        async def task_start(inter: discord.Interaction, goal: str) -> None:
+            gid, *_ = self._space(inter)
+            await inter.response.send_message(f"📋 작업을 맡았어요: {goal[:200]}")
+            origin = await inter.original_response()
+            try:
+                task = await self.tasks.start(goal=goal, user_id=inter.user.id, user_name=user_label(inter.user),
+                                              channel_id=inter.channel_id, group_id=gid,
+                                              is_dm=inter.guild is None, origin_message_id=origin.id)
+                await inter.edit_original_response(content=f"📋 **작업 #{task['id']}** 접수: {goal[:200]}")
+            except ToolError as exc:
+                await inter.edit_original_response(content=f"⚠️ {exc}")
+
+        @task_group.command(name="list", description="내 작업 목록 (진행 중·예약·최근 완료)")
+        async def task_list(inter: discord.Interaction) -> None:
+            tasks = await self.tasks.list_for(inter.user.id)
+            if not tasks:
+                await inter.response.send_message("맡긴 작업이 없어요.", ephemeral=True)
+                return
+            icon = {"queued": "⏳", "running": "🔄", "scheduled": "🗓️", "done": "✅", "failed": "⚠️",
+                    "cancelled": "⛔", "cancel_requested": "⛔"}
+            lines = []
+            for t in tasks[:12]:
+                extra = ""
+                if t["status"] == "scheduled":
+                    nr = datetime.fromtimestamp(t["next_run"], KST).strftime("%m/%d %H:%M") if t.get("next_run") else "-"
+                    extra = f" · {describe_schedule(t['schedule'])} (다음 {nr})"
+                elif t["status"] == "running":
+                    extra = f" · {t.get('steps', 0)}단계"
+                lines.append(f"{icon.get(t['status'], '•')} `#{t['id']}` {t['goal'][:60]}{extra}")
+            await inter.response.send_message("\n".join(lines), ephemeral=True)
+
+        @task_group.command(name="cancel", description="작업 또는 예약을 취소합니다")
+        @app_commands.describe(task_id="취소할 작업 번호 (/task list 로 확인)")
+        async def task_cancel(inter: discord.Interaction, task_id: str) -> None:
+            ok = await self.tasks.cancel(task_id.strip().lstrip("#"), user_id=inter.user.id)
+            await inter.response.send_message("취소했어요." if ok else "취소할 수 있는 작업이 아니에요.",
+                                              ephemeral=True)
+
+        self.tree.add_command(task_group)

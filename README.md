@@ -19,9 +19,12 @@ flowchart LR
 
 ## 기능
 
-- **장기 기억** — 대화를 지식 그래프로 저장하고, 답할 때 관련 기억을 떠올림. 서버(`guild-…`)·DM(`dm-…`)별로 완전히 분리
+- **장기 기억** — 대화를 지식 그래프로 저장하고, 답할 때 관련 기억을 떠올림. 서버(`guild-…`)별로 완전히 분리
 - **토큰 절약** — 메시지마다 저장하지 않고 8마디/90초 단위로 묶어 백그라운드 저장, 429 자동 재시도
 - **대화 도구** — 계산, 날씨, 구글 검색, 환율, D-day, 세계 시각, 메뉴 고르기·주사위, **리마인더**, 기억 재검색 ([도구 목록](docs/GUIDE.md#️-대화-도구-gemini-function-calling))
+- **백그라운드 작업** — "조사해서 나중에 알려줘" → 뒤에서 검색·페이지 읽기를 여러 번 하고 결과를 답장으로 올림 (단계·시간·토큰·하루 횟수 한도) ([작업](docs/GUIDE.md#-백그라운드--예약-작업))
+- **예약 작업** — "매일 아침 8시에 날씨랑 뉴스 요약해줘" 같은 반복 작업
+- **유저별 기억** — 서버 기억과 별개로 사람마다 개인 기억 그래프(`user-…`)가 쌓이고, 관리 웹에서 유저별 관계도를 볼 수 있음 ([유저 기억](docs/GUIDE.md#-유저별-기억))
 - **관리 웹** — 기억 그래프 시각화, 사실 수정·만료·삭제, 원본 대화, 의미 검색, 저장 로그 ([관리 체계](docs/GUIDE.md#️-관리-체계-admin))
 - **페르소나** — 관리 웹 ⚙ 봇 설정 또는 `config/persona.md` 로 말투·성격 변경, 재시작 불필요 ([페르소나](docs/GUIDE.md#-페르소나-바꾸기))
 
@@ -52,7 +55,8 @@ flowchart LR
 ## 디스코드에서
 
 - `@라스페치아 …` / 봇 메시지에 답장 / DM → 대화
-- `/memory recall <질문>` 기억 검색 · `/memory save` 지금 저장 · `/memory status` 저장 현황
+- `/memory recall <질문>` 기억 검색 · `/memory me` 나에 대한 기억 · `/memory forget_me` 내 개인 기억 삭제 · `/memory save` · `/memory status`
+- `/task start <할 일>` 백그라운드 작업 · `/task list` · `/task cancel <번호>` (말로 "~조사해서 알려줘", "매일 8시에 ~해줘" 해도 됨)
 
 ## 프로젝트 구조
 
@@ -60,10 +64,12 @@ flowchart LR
 app/
   bot.py            디스코드 봇 (메시지 처리, 슬래시 명령, 리마인더 발송)
   chat.py           답변 생성 + 함수 호출 루프
+  agent.py          백그라운드 조사 에이전트 (긴 루프 + 한도)
+  tasks.py          백그라운드·예약 작업 관리 (대기열, 예약, 재시작 복구)
   memory.py         Graphiti(FalkorDB + Gemini) 장기 기억
   batcher.py        배칭·디바운스 저장, 재시도, 실패 보관
   persona.py        봇 이름·페르소나 (웹 > 파일 > .env > 기본값)
-  tools/            함수 호출 도구 (basic, web, reminders, memory_tool)
+  tools/            함수 호출 도구 (basic, web, reminders, tasks_tool, memory_tool)
   admin/            관리 웹 (FastAPI + 정적 프런트엔드)
 config/persona.md   페르소나 파일
 docs/GUIDE.md       상세 가이드

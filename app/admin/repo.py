@@ -26,6 +26,7 @@ from graphiti_core.search.search_config import (
 )
 
 from ..memory import EVENTS_KEY, SPACES_KEY, STATUS_KEY, MemoryService
+from ..tasks import TASKS_KEY, describe_schedule
 
 log = logging.getLogger(__name__)
 _GID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
@@ -107,6 +108,7 @@ class GraphRepo:
             if not m and not stats.get("entities") and not stats.get("episodes"):
                 continue  # 비어 있는 기본 그래프(default_db 등)는 숨김
             kind = m.get("kind") or ("guild" if gid.startswith("guild-") else
+                                     "user" if gid.startswith("user-") else
                                      "dm" if gid.startswith("dm-") else "other")
             out.append({
                 "group_id": gid,
@@ -131,6 +133,30 @@ class GraphRepo:
             except Exception:  # noqa: BLE001
                 pass
         return {"online": status is not None, "bot": status, "events": events}
+
+    # ------------------------------------------------------------------ 작업
+    async def tasks(self) -> list[dict[str, Any]]:
+        out = []
+        for raw in (await self.redis.hgetall(TASKS_KEY) or {}).values():
+            try:
+                task = json.loads(_s(raw))
+            except Exception:  # noqa: BLE001
+                continue
+            if task.get("schedule"):
+                task["schedule_text"] = describe_schedule(task["schedule"])
+            out.append(task)
+        return sorted(out, key=lambda x: x.get("created", 0), reverse=True)
+
+    async def cancel_task(self, task_id: str) -> bool:
+        raw = await self.redis.hget(TASKS_KEY, task_id)
+        if not raw:
+            return False
+        task = json.loads(_s(raw))
+        if task["status"] in {"done", "failed", "cancelled"}:
+            return False
+        task["status"] = "cancelled" if task["status"] in {"queued", "scheduled"} else "cancel_requested"
+        await self.redis.hset(TASKS_KEY, task_id, json.dumps(task, ensure_ascii=False))
+        return True
 
     # ------------------------------------------------------------------ 그래프
     async def graph(self, gid: str, limit: int = 150, with_episodes: bool = False) -> dict[str, Any]:

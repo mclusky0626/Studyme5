@@ -75,6 +75,7 @@ class _Buffer:
     lines: list[_Line] = field(default_factory=list)
     chars: int = 0
     timer: asyncio.TimerHandle | None = None
+    extraction_hint: str | None = None
 
 
 EventSink = Callable[[dict[str, Any]], Awaitable[None]]
@@ -115,6 +116,7 @@ class EpisodeBatcher:
         source_description: str,
         is_bot: bool = False,
         direct: bool = False,
+        extraction_hint: str | None = None,
     ) -> bool:
         """메시지를 버퍼에 추가한다. 저장 대상이 아니면 False. (동기 함수 — 절대 블로킹하지 않음)"""
         if self._closing:
@@ -129,7 +131,7 @@ class EpisodeBatcher:
         buf = self._buffers.get(key)
         if buf is None:
             buf = _Buffer(group_id=group_id, channel_label=channel_label,
-                          source_description=source_description)
+                          source_description=source_description, extraction_hint=extraction_hint)
             self._buffers[key] = buf
         buf.lines.append(_Line(speaker=speaker, text=body, at=at or datetime.now(timezone.utc)))
         buf.chars += len(body)
@@ -162,6 +164,7 @@ class EpisodeBatcher:
             source_description=buf.source_description,
             reference_time=first,
             message_count=len(buf.lines),
+            extraction_hint=buf.extraction_hint,
         )
         log.info("[%s] 배치 확정(%s): %d마디 %d자 → 백그라운드 저장 예약",
                  buf.group_id, reason, len(buf.lines), buf.chars)

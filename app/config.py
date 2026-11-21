@@ -99,6 +99,17 @@ class Settings:
     capture_all_messages: bool
     memory_search_limit: int
     memory_node_limit: int
+    user_memory: bool
+
+    # --- 백그라운드 / 예약 작업 (조사 한도) ---
+    tasks_enabled: bool
+    task_model: str
+    task_max_steps: int
+    task_max_seconds: int
+    task_max_tokens: int
+    task_max_concurrent: int
+    task_daily_limit: int
+    task_max_scheduled: int
 
     # --- 안정성 / 429 방어 ---
     max_concurrent_episodes: int
@@ -155,6 +166,15 @@ class Settings:
             capture_all_messages=_bool("CAPTURE_ALL_MESSAGES", False),
             memory_search_limit=_int("MEMORY_SEARCH_LIMIT", 8),
             memory_node_limit=_int("MEMORY_NODE_LIMIT", 4),
+            user_memory=_bool("USER_MEMORY", True),
+            tasks_enabled=_bool("TASKS_ENABLED", True),
+            task_model=_env("TASK_MODEL", default=base_model),
+            task_max_steps=_int("TASK_MAX_STEPS", 12),
+            task_max_seconds=_int("TASK_MAX_SECONDS", 600),
+            task_max_tokens=_int("TASK_MAX_TOKENS", 150_000),
+            task_max_concurrent=_int("TASK_MAX_CONCURRENT", 1),
+            task_daily_limit=_int("TASK_DAILY_LIMIT", 10),
+            task_max_scheduled=_int("TASK_MAX_SCHEDULED", 5),
             max_concurrent_episodes=_int("MAX_CONCURRENT_EPISODES", 1),
             max_concurrent_chats=_int("MAX_CONCURRENT_CHATS", 4),
             graphiti_max_coroutines=_int("GRAPHITI_MAX_COROUTINES", 4),

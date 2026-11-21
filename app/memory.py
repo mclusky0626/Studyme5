@@ -67,8 +67,27 @@ class MemoryUnavailable(RuntimeError):
 
 
 def group_id_for(guild_id: int | None, user_id: int) -> str:
-    """서버는 guild-<id>, DM 은 dm-<user_id> 로 기억 공간을 분리한다."""
-    return f"guild-{guild_id}" if guild_id is not None else f"dm-{user_id}"
+    """서버는 guild-<id>. DM 은 그 사람의 개인 기억 공간(user-<id>)을 그대로 쓴다."""
+    return f"guild-{guild_id}" if guild_id is not None else user_group_id(user_id)
+
+
+def user_group_id(user_id: int) -> str:
+    """유저별 기억 공간: 서버·DM 어디서 말했든 그 사람에 대한 기억이 모인다."""
+    return f"user-{user_id}"
+
+
+def legacy_dm_group_id(user_id: int) -> str:
+    """예전 버전의 DM 기억 공간 (삭제하지 않고 검색에만 계속 사용)."""
+    return f"dm-{user_id}"
+
+
+def user_extraction_hint(name: str) -> str:
+    return (
+        f"이 에피소드는 사용자 '{name}'와 AI 봇의 대화로, '{name}' 개인의 기억 공간에 저장된다. "
+        f"'{name}' 본인에 대한 사실(취향, 계획, 경험, 관계, 소유물, 일정, 성격)과 "
+        f"'{name}'이 언급한 사람·장소·사물과의 관계를 중심으로 추출하라. "
+        "AI 봇의 인사말·맞장구·일반 상식 설명은 사실로 추출하지 마라. 이름과 사실은 대화 언어 그대로 유지하라."
+    )
 
 
 @dataclass
@@ -80,6 +99,7 @@ class Episode:
     reference_time: datetime
     message_count: int
     attempts: int = 0
+    extraction_hint: str | None = None
 
     def to_json(self) -> str:
         data = asdict(self)
@@ -97,9 +117,19 @@ class Episode:
 class MemoryContext:
     facts: list[str] = field(default_factory=list)
     entities: list[str] = field(default_factory=list)
+    personal_facts: list[str] = field(default_factory=list)      # 말하는 사람의 개인 기억
+    personal_entities: list[str] = field(default_factory=list)
 
     def is_empty(self) -> bool:
-        return not self.facts and not self.entities
+        return not (self.facts or self.entities or self.personal_facts or self.personal_entities)
+
+    def merge_personal(self, other: "MemoryContext") -> "MemoryContext":
+        """other(유저 기억)를 개인 기억 칸으로 합친다. 서버 기억과 겹치는 문장은 뺀다."""
+        seen = set(self.facts)
+        self.personal_facts += [f for f in other.facts if f not in seen and f not in self.personal_facts]
+        seen_e = set(self.entities)
+        self.personal_entities += [e for e in other.entities if e not in seen_e and e not in self.personal_entities]
+        return self
 
 
 def _fmt_date(value: Any) -> str | None:
@@ -234,6 +264,19 @@ class MemoryService:
             self._graphs.pop(gid, None)
             log.info("[%s] 그래프가 삭제되어 캐시를 비웠습니다.", gid)
 
+    async def delete_group(self, group_id: str) -> bool:
+        """기억 공간(그래프) 하나를 통째로 삭제. 없으면 False."""
+        if not self.available or not _GROUP_RE.match(group_id):
+            return False
+        await self.refresh_graph_list()
+        if group_id not in self._existing_graphs:
+            return False
+        await self._base_driver.client.select_graph(group_id).delete()  # type: ignore[union-attr]
+        await self.redis.hdel(SPACES_KEY, group_id)
+        self.forget_group(group_id)
+        log.info("[%s] 기억 공간 삭제", group_id)
+        return True
+
     def forget_group(self, group_id: str) -> None:
         self._graphs.pop(group_id, None)
         self._existing_graphs.discard(group_id)
@@ -327,7 +370,7 @@ class MemoryService:
             reference_time=ep.reference_time,
             source=EpisodeType.message,
             group_id=ep.group_id,
-            custom_extraction_instructions=EXTRACTION_HINT,
+            custom_extraction_instructions=ep.extraction_hint or EXTRACTION_HINT,
         )
         self._existing_graphs.add(ep.group_id)
         return result

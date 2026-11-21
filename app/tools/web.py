@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import time
 from typing import Any
 
@@ -131,6 +133,14 @@ async def convert_currency(args, ctx: ToolContext):
     ["query"],
 )
 async def web_search(args, ctx: ToolContext):
+    # 모델이 가끔 queries=[...] 로 여러 개를 한 번에 넘긴다 → 최대 3개를 병렬 검색
+    many = args.get("queries")
+    if isinstance(many, list) and many and not args.get("query"):
+        qs = [str(q).strip() for q in many if str(q).strip()][:3]
+        results = await asyncio.gather(*(web_search({**args, "query": q, "queries": None}, ctx) for q in qs),
+                                       return_exceptions=True)
+        return {"results": [r if isinstance(r, dict) else {"query": q, "error": str(r)}
+                            for q, r in zip(qs, results)]}
     query = str(args.get("query", "")).strip()[:300]
     if not query:
         raise ToolError("검색어가 비어 있습니다")
@@ -163,3 +173,110 @@ async def web_search(args, ctx: ToolContext):
     except (AttributeError, IndexError, TypeError):
         pass
     return {"query": query, "summary": (resp.text or "").strip() or "검색 결과 없음", "sources": sources}
+
+
+# ------------------------------------------------------------------ 웹페이지 읽기
+import asyncio as _asyncio
+import ipaddress as _ipaddress
+import socket as _socket
+from html.parser import HTMLParser as _HTMLParser
+from urllib.parse import urljoin as _urljoin
+from urllib.parse import urlparse as _urlparse
+
+_MAX_PAGE_BYTES = 2_000_000
+_MAX_PAGE_CHARS = 12_000
+_SKIP_TAGS = {"script", "style", "noscript", "svg", "head", "nav", "footer", "form", "iframe"}
+_FETCH_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36 discord-memory-bot/1.0",
+    "Accept": "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
+    "Accept-Language": "ko,en;q=0.8,ja;q=0.6",
+}
+_BLOCK_TAGS = {"p", "div", "br", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6", "section", "article", "dd", "dt"}
+
+
+class _TextExtractor(_HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self.title = ""
+        self._skip = 0
+        self._in_title = False
+
+    def handle_starttag(self, tag, attrs):
+        if tag in _SKIP_TAGS:
+            self._skip += 1
+        if tag == "title":
+            self._in_title = True
+        if tag in _BLOCK_TAGS:
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag):
+        if tag in _SKIP_TAGS and self._skip:
+            self._skip -= 1
+        if tag == "title":
+            self._in_title = False
+
+    def handle_data(self, data):
+        if self._in_title:
+            self.title += data
+        elif not self._skip:
+            self.parts.append(data)
+
+    def text(self) -> str:
+        raw = "".join(self.parts)
+        lines = [" ".join(ln.split()) for ln in raw.splitlines()]
+        return "\n".join(ln for ln in lines if ln)
+
+
+async def _assert_public(url: str) -> None:
+    """노트북의 내부망(공유기, NAS, localhost, 도커 내부 등)에 접근하지 못하게 막는다."""
+    parsed = _urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ToolError("http/https 주소만 읽을 수 있습니다")
+    try:
+        infos = await _asyncio.get_running_loop().getaddrinfo(parsed.hostname, parsed.port or 443)
+    except _socket.gaierror as exc:
+        raise ToolError(f"주소를 찾을 수 없습니다: {parsed.hostname}") from exc
+    for info in infos:
+        ip = _ipaddress.ip_address(info[4][0])
+        if not ip.is_global or ip.is_multicast:
+            raise ToolError("내부망/로컬 주소는 읽을 수 없습니다")
+
+
+@tool(
+    "fetch_url",
+    "웹페이지 본문 텍스트를 읽는다. 검색 요약만으로 부족할 때(원문 대사·표·상세 설명이 필요할 때) 사용. "
+    "주소는 사용자가 준 링크나 정확히 아는 공개 URL 이어야 한다.",
+    {"url": {"type": "string", "description": "http(s) 주소"},
+     "find": {"type": "string", "description": "찾고 싶은 키워드가 있으면 그 주변 위주로 잘라 준다"}},
+    ["url"],
+)
+async def fetch_url(args, ctx: ToolContext):
+    url = str(args.get("url", "")).strip()
+    for _ in range(4):  # 리다이렉트를 직접 따라가며 매번 내부망 여부를 검사
+        await _assert_public(url)
+        r = await ctx.http.get(url, follow_redirects=False, headers=_FETCH_HEADERS)
+        if r.is_redirect and r.headers.get("location"):
+            url = _urljoin(url, r.headers["location"])
+            continue
+        break
+    else:
+        raise ToolError("리다이렉트가 너무 많습니다")
+    if r.status_code >= 400:
+        raise ToolError(f"페이지를 열 수 없습니다 (HTTP {r.status_code})")
+    ctype = r.headers.get("content-type", "")
+    if not any(t in ctype for t in ("text/", "html", "json", "xml")):
+        raise ToolError(f"텍스트가 아닌 문서입니다 ({ctype})")
+    body = r.content[:_MAX_PAGE_BYTES].decode(r.encoding or "utf-8", errors="replace")
+    if "html" in ctype:
+        parser = _TextExtractor()
+        parser.feed(body)
+        title, text = parser.title.strip(), parser.text()
+    else:
+        title, text = "", body
+    find = str(args.get("find") or "").strip()
+    if find and find in text:
+        i = text.find(find)
+        text = text[max(0, i - 2000): i + _MAX_PAGE_CHARS - 2000]
+    truncated = len(text) > _MAX_PAGE_CHARS
+    return {"url": url, "title": title[:200], "text": text[:_MAX_PAGE_CHARS], "truncated": truncated}
