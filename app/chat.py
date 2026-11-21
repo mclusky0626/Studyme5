@@ -89,45 +89,54 @@ class ChatResponder:
         return ToolContext(settings=self.s, genai_client=self.client, limiter=self.limiter,
                            http=self.http, **kwargs)
 
-    def build_system_prompt(self, *, bot_name: str, place: str, memory: MemoryContext,
-                            persona: str | None = None, with_tools: bool = False) -> str:
-        now = datetime.now(self._tz).strftime("%Y-%m-%d (%a) %H:%M KST")
+    # ------------------------------------------------------------------ 프롬프트 (캐시 친화적 배치)
+    # Gemini 는 요청의 "앞부분"이 이전 요청과 똑같으면 자동 캐시(약 90% 할인)한다.
+    # 그래서 매번 같은 것(도구 정의 → 페르소나·규칙·도구 안내)은 시스템 프롬프트에,
+    # 매번 바뀌는 것(현재 시각, 장소, 장기 기억, 최근 대화)은 모두 뒤쪽 사용자 메시지에 둔다.
+    def build_system_prompt(self, *, bot_name: str, persona: str | None = None, with_tools: bool = False,
+                            place: str | None = None, memory: MemoryContext | None = None) -> str:
+        """정적 부분만 (place·memory 인자는 호환용으로 받기만 하고 쓰지 않는다)."""
         parts = [
-            f"너는 '{place}'에서 활동하는 AI '{bot_name}'이다.",
+            f"너는 디스코드에서 활동하는 AI '{bot_name}'이다.",
             "",
             "[페르소나 — 말투와 성격은 이것을 따른다]",
             persona or DEFAULT_PERSONA,
             "",
             "규칙:",
-            "- [장기 기억]은 과거 대화에서 추출한 사실이다. 지금 대화와 관련 있을 때만 자연스럽게 활용하라.",
+            "- 사용자 메시지 맨 앞의 [상황]에 현재 시각과 장소가, [장기 기억]·[개인 기억]에 과거 대화에서 추출한 사실이 있다. "
+            "지금 대화와 관련 있을 때만 자연스럽게 활용하라.",
             "- '데이터베이스에 따르면', '기억 목록에 의하면' 같은 기계적인 표현은 쓰지 마라.",
             "- 기억과 현재 대화가 충돌하면 현재 대화를 우선하고, '과거 사실'로 표시된 것은 지금은 유효하지 않을 수 있다.",
+            "- [개인 기억]은 지금 말하는 사람에 대해 서버·DM을 통틀어 기억하는 것이다. 다른 사람도 보는 서버에서는 "
+            "건강·연애·주소·금전 같은 민감한 개인 기억을 먼저 꺼내지 마라.",
             "- 모르는 것은 지어내지 말고 솔직하게 물어봐라.",
             "- 너는 메시지당 답장을 한 번만 보낼 수 있다. '잠시만요', '찾아볼게요', '정리해서 보여드릴게요'처럼 "
             "나중을 약속하는 말로 끝내지 말고, 필요한 도구는 지금 호출해서 이 답변 안에서 완성하라.",
             "- 일상 대화는 1~4문장으로 짧게. 단, 정리·목록·예문·비교·자세한 설명을 요청받으면 요청한 분량을 "
             "끝까지 채워서 답하라 (긴 답변은 자동으로 나눠 전송된다). 디스코드 마크다운(굵게, 목록, 제목)을 써도 된다. "
             "단, 디스코드는 표(| 칸 |)를 지원하지 않으므로 표 대신 목록으로 정리하라.",
-            f"- 현재 시각: {now}",
         ]
         if with_tools:
             parts += ["", TOOL_GUIDE]
-        if memory.facts:
-            parts += ["", "[장기 기억 — 관련 사실]", *(f"- {f}" for f in memory.facts)]
-        if memory.entities:
-            parts += ["", "[장기 기억 — 관련 인물/대상 요약]", *(f"- {e}" for e in memory.entities)]
-        if memory.personal_facts or memory.personal_entities:
-            parts += ["", "[개인 기억 — 지금 말하는 사람에 대해 서버·DM을 통틀어 기억하는 것]",
-                      *(f"- {f}" for f in memory.personal_facts),
-                      *(f"- {e}" for e in memory.personal_entities),
-                      "(다른 사람도 보는 서버에서는 건강·연애·주소·금전 같은 민감한 개인 기억을 먼저 꺼내지 마라.)"]
-        if memory.is_empty():
-            parts += ["", "[장기 기억] (이 질문과 관련된 기억 없음)"]
         return "\n".join(parts)
 
-    @staticmethod
-    def build_user_content(history: list[ShortLine], current: ShortLine) -> str:
-        lines: list[str] = []
+    def build_user_content(self, history: list[ShortLine], current: ShortLine, *,
+                           memory: MemoryContext | None = None, place: str | None = None) -> str:
+        """매번 바뀌는 부분: 상황(시각·장소) → 기억 → 최근 대화 → 지금 메시지."""
+        now = datetime.now(self._tz).strftime("%Y-%m-%d (%a) %H:%M KST")
+        memory = memory or MemoryContext()
+        lines = ["[상황]", f"- 현재 시각: {now}"]
+        if place:
+            lines.append(f"- 장소: {place}")
+        if memory.facts or memory.entities:
+            lines += ["", "[장기 기억 — 이 공간에서 기억하는 관련 사실]", *(f"- {f}" for f in memory.facts)]
+            lines += [f"- {e}" for e in memory.entities]
+        if memory.personal_facts or memory.personal_entities:
+            lines += ["", "[개인 기억 — 지금 말하는 사람에 대해]", *(f"- {f}" for f in memory.personal_facts)]
+            lines += [f"- {e}" for e in memory.personal_entities]
+        if memory.is_empty():
+            lines += ["", "[장기 기억] (이 질문과 관련된 기억 없음)"]
+        lines.append("")
         if history:
             lines.append("[최근 대화]")
             lines += [f"{h.speaker}{' (너)' if h.is_bot else ''}: {h.text}" for h in history]
@@ -160,11 +169,9 @@ class ChatResponder:
         tool_ctx: ToolContext | None = None,
     ) -> str:
         decls = declarations(tool_ctx) if tool_ctx is not None else []
-        system_prompt = self.build_system_prompt(bot_name=bot_name, place=place, memory=memory,
-                                                 persona=persona, with_tools=bool(decls))
-        contents: list[types.Content] = [
-            types.Content(role="user", parts=[types.Part.from_text(text=self.build_user_content(history, current))])
-        ]
+        system_prompt = self.build_system_prompt(bot_name=bot_name, persona=persona, with_tools=bool(decls))
+        user_text = self.build_user_content(history, current, memory=memory, place=place)
+        contents: list[types.Content] = [types.Content(role="user", parts=[types.Part.from_text(text=user_text)])]
         base = types.GenerateContentConfig(
             system_instruction=system_prompt,
             temperature=self.s.chat_temperature,
