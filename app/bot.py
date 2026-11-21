@@ -17,6 +17,7 @@ from .batcher import EpisodeBatcher
 from .chat import ChatResponder, ShortLine
 from .config import Settings
 from .gemini_resilience import RateLimiter
+from .help import TOPICS, build_help, is_help_request
 from .memory import (
     MemoryContext,
     MemoryService,
@@ -110,6 +111,20 @@ class MemoryBot(discord.Client):
         self._bg = [asyncio.create_task(self._status_loop()),
                     asyncio.create_task(self._reminder_loop()),
                     asyncio.create_task(self._tasks_loop())]
+
+    async def on_guild_join(self, guild: discord.Guild) -> None:
+        """새 서버에 들어가면 짧은 자기소개를 한 번 올린다."""
+        bot_name, _ = await self.persona.get()
+        me = guild.me
+        channels = ([guild.system_channel] if guild.system_channel else []) + list(guild.text_channels)
+        for ch in channels:
+            if ch and me and ch.permissions_for(me).send_messages:
+                try:
+                    await ch.send(embed=build_help("start", bot_name))
+                    log.info("새 서버 입장: %s → #%s 에 소개 메시지", guild.name, ch.name)
+                except discord.HTTPException:
+                    continue
+                break
 
     async def on_ready(self) -> None:
         log.info("로그인: %s (id=%s) — 서버 %d개, 모델 %s", self.user, self.user.id,
@@ -324,8 +339,12 @@ class MemoryBot(discord.Client):
                                  direct=False, **server_buf)
             return
 
-        reply_text: str | None = None
         bot_name, persona = await self.persona.get()
+        if is_help_request(text):  # "@봇 도움말" → 모델 호출 없이 바로 안내 (토큰 0)
+            await message.reply(embed=build_help("start", bot_name), mention_author=False)
+            return
+
+        reply_text: str | None = None
         started = asyncio.get_running_loop().time()
         log.info("💬 [%s] %s: %s", gid, speaker, text[:80].replace("\n", " "))
         try:
@@ -487,6 +506,17 @@ class MemoryBot(discord.Client):
                                               ephemeral=True)
 
         self.tree.add_command(task_group)
+
+        # -------------------------------------------------------------- /help
+        @app_commands.command(name="help", description="사용법 · 할 수 있는 일 (나에게만 보임)")
+        @app_commands.describe(topic="주제 (비워 두면 전체 요약)")
+        @app_commands.choices(topic=[app_commands.Choice(name=label, value=key) for key, label in TOPICS.items()])
+        async def help_cmd(inter: discord.Interaction, topic: app_commands.Choice[str] | None = None) -> None:
+            bot_name, _ = await self.persona.get()
+            await inter.response.send_message(embed=build_help(topic.value if topic else "start", bot_name),
+                                              ephemeral=True)
+
+        self.tree.add_command(help_cmd)
 
         # -------------------------------------------------------------- /usage
         @app_commands.command(name="usage", description="Gemini API 사용량과 추정 비용 (서버 관리자/봇 주인)")

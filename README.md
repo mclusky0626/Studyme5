@@ -54,6 +54,7 @@ flowchart LR
 
 ## 디스코드에서
 
+- `/help` 사용법 (주제별: 처음 시작 · 대화·기억 · 도구 · 알림·작업 · 프라이버시 · 관리자) — `@라스페치아 도움말` 이라고 해도 됨
 - `@라스페치아 …` / 봇 메시지에 답장 / DM → 대화
 - `/memory recall <질문>` 기억 검색 · `/memory me` 나에 대한 기억 · `/memory forget_me` 내 개인 기억 삭제 · `/memory save` · `/memory status`
 - `/task start <할 일>` 백그라운드 작업 · `/task list` · `/task cancel <번호>` (말로 "~조사해서 알려줘", "매일 8시에 ~해줘" 해도 됨)
@@ -71,6 +72,7 @@ app/
   memory.py         Graphiti(FalkorDB + Gemini) 장기 기억
   batcher.py        배칭·디바운스 저장, 재시도, 실패 보관
   persona.py        봇 이름·페르소나 (웹 > 파일 > .env > 기본값)
+  help.py           /help 도움말 내용
   tools/            함수 호출 도구 (basic, web, reminders, tasks_tool, memory_tool)
   admin/            관리 웹 (FastAPI + 정적 프런트엔드)
 config/persona.md   페르소나 파일
