@@ -29,6 +29,7 @@ from .persona import PersonaStore
 from .tasks import Messenger, TaskManager, TaskStore, describe_schedule
 from .tools import ToolError
 from .tools.reminders import ReminderStore
+from .usage import format_report, report, tracker, usd_krw
 
 log = logging.getLogger(__name__)
 KST = ZoneInfo("Asia/Seoul")
@@ -73,6 +74,7 @@ class MemoryBot(discord.Client):
         self.memory = MemoryService(settings, self.limiter)
         self.chat = ChatResponder(settings, self.limiter)
         redis = lambda: self.memory.redis if self.memory.available else None  # noqa: E731
+        tracker.bind(redis)  # 모든 Gemini 호출의 토큰을 일별로 기록
         # 이름·페르소나: 관리 웹 > persona.md > .env > 기본값 (재시작 없이 반영)
         self.persona = PersonaStore(settings, redis)
         self.reminders = ReminderStore(redis)
@@ -478,3 +480,37 @@ class MemoryBot(discord.Client):
                                               ephemeral=True)
 
         self.tree.add_command(task_group)
+
+        # -------------------------------------------------------------- /usage
+        @app_commands.command(name="usage", description="Gemini API 사용량과 추정 비용 (서버 관리자/봇 주인)")
+        @app_commands.describe(period="기간")
+        @app_commands.choices(period=[
+            app_commands.Choice(name="오늘", value="today"),
+            app_commands.Choice(name="최근 7일", value="week"),
+            app_commands.Choice(name="이번 달", value="month"),
+            app_commands.Choice(name="최근 30일", value="last30"),
+        ])
+        @app_commands.default_permissions(manage_guild=True)
+        async def usage_cmd(inter: discord.Interaction, period: app_commands.Choice[str] | None = None) -> None:
+            if inter.guild is None and not await self.is_owner(inter.user):
+                await inter.response.send_message("DM 에서는 봇 주인만 볼 수 있어요.", ephemeral=True)
+                return
+            await inter.response.defer(ephemeral=True, thinking=True)
+            key = period.value if period else "month"
+            data = await report(self.s, key)
+            krw = await usd_krw(self.s)
+            t = data["total"]
+            title = {"today": "오늘", "week": "최근 7일", "month": "이번 달", "last30": "최근 30일"}[key]
+            embed = discord.Embed(
+                title=f"📊 API 사용량 — {title} ({data['from'][4:6]}/{data['from'][6:]}~{data['to'][4:6]}/{data['to'][6:]})",
+                description=(f"**추정 비용 ${data['cost_usd']:.4f} (약 {data['cost_usd'] * krw:,.0f}원)**\n"
+                             f"요청 {t['req']:,}회 · 입력 {t['in']:,} · 출력 {t['out'] + t['think']:,} 토큰"),
+                color=0x7C5CFF,
+            )
+            lines = format_report(data, krw)
+            embed.add_field(name="항목별", value="\n".join(lines)[:1024] if lines else "기록 없음", inline=False)
+            embed.set_footer(text=f"봇이 직접 센 추정치 (유료 단가 기준, 1$={krw:,.0f}원). 무료 티어면 실제 청구 0원. "
+                                  "정확한 청구액은 Google AI Studio 결제 화면에서 확인.")
+            await inter.followup.send(embed=embed, ephemeral=True)
+
+        self.tree.add_command(usage_cmd)

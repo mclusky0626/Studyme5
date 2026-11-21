@@ -451,6 +451,19 @@ textarea.persona-input { min-height: 320px; font-size: 14px; line-height: 1.6; }
 .task-result { margin-top: 10px; background: var(--surface-2); border-radius: 10px; padding: 10px 12px; white-space: pre-wrap; word-break: break-word; font-size: 13px; max-height: 140px; overflow: hidden; }
 .task-result.open { max-height: none; }
 
+/* ------------------------------------------------------------------ usage */
+.usage-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
+.usage-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; }
+.usage-card b { display: block; font-size: 22px; font-weight: 800; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.usage-card span { color: var(--muted); font-size: 12.5px; }
+.usage-lines div { padding: 7px 0; border-bottom: 1px solid var(--border); font-size: 13.5px; }
+.usage-lines div:last-child { border-bottom: 0; }
+.usage-days { display: flex; flex-direction: column; gap: 4px; }
+.usage-day { display: grid; grid-template-columns: 52px minmax(0, 1fr) 110px; gap: 10px; align-items: center; font-size: 12.5px; }
+.usage-day .bar { height: 10px; border-radius: 5px; background: var(--surface-2); overflow: hidden; }
+.usage-day .bar i { display: block; height: 100%; background: var(--accent); border-radius: 5px; min-width: 2px; }
+.usage-day .num { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+
 /* ------------------------------------------------------------------ responsive */
 @media (max-width: 900px) {
   .only-mobile { display: inline-grid; }

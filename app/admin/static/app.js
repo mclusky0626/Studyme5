@@ -707,12 +707,52 @@
     } catch (e) { toast(e.message, "error"); }
   });
 
+  // ---------------------------------------------------------------- usage view
+  const fmtTok = (n) => n >= 1e6 ? `${(n / 1e6).toFixed(2)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(n);
+
+  async function loadUsage() {
+    try {
+      const d = await api(`/api/usage?period=${$("#usagePeriod").value}`);
+      const krw = d.usd_krw || 1350;
+      const t = d.total;
+      $("#usageCards").innerHTML = [
+        [`$${d.cost_usd.toFixed(4)}`, `추정 비용 · 약 ${Math.round(d.cost_usd * krw).toLocaleString()}원`],
+        [t.req.toLocaleString(), "Gemini 요청 수"],
+        [fmtTok(t.in), "입력 토큰" + (t.cached ? ` (캐시 ${fmtTok(t.cached)})` : "")],
+        [fmtTok(t.out + t.think), "출력 토큰 (사고 포함)"],
+        [`${d.search.month_grounded.toLocaleString()} / ${d.search.free_per_month.toLocaleString()}`, "이번 달 구글 검색 / 무료 한도"],
+      ].map(([v, l]) => `<div class="usage-card"><b>${esc(v)}</b><span>${esc(l)}</span></div>`).join("");
+      $("#usageLines").innerHTML = d.lines.length ? d.lines.map((l) => `<div>${esc(l)}</div>`).join("")
+        : `<div class="muted">이 기간에 기록된 사용량이 없어요. (사용량 기록은 이 기능을 넣은 뒤부터 쌓입니다)</div>`;
+      const days = Object.entries(d.days);
+      const max = Math.max(1e-9, ...days.map(([, v]) => v.cost_usd));
+      $("#usageDays").innerHTML = days.length ? days.map(([day, v]) => `
+        <div class="usage-day"><span>${day.slice(4, 6)}/${day.slice(6)}</span>
+          <span class="bar"><i style="width:${(v.cost_usd / max) * 100}%"></i></span>
+          <span class="num">$${v.cost_usd.toFixed(4)} · ${v.req}회</span></div>`).join("")
+        : `<div class="muted">기록 없음</div>`;
+    } catch (e) { $("#usageLines").innerHTML = `<div class="danger-text">불러오기 실패: ${esc(e.message)}</div>`; }
+  }
+
+  async function showUsage() {
+    state.gid = null;
+    renderSpaces();
+    closeDrawer();
+    closeSidebar();
+    hideViews();
+    $("#usageView").classList.remove("hidden");
+    history.replaceState(null, "", "#usage");
+    await loadUsage();
+  }
+  $("#usageBtn").addEventListener("click", showUsage);
+  $("#usagePeriod").addEventListener("change", loadUsage);
+
   // ---------------------------------------------------------------- tasks view
   const TASK_LABEL = { queued: "대기", running: "진행 중", scheduled: "예약", done: "완료", failed: "실패", cancelled: "취소됨", cancel_requested: "취소 중" };
   let taskTimer = null;
 
   function hideViews() {
-    ["#welcome", "#spaceView", "#settingsView", "#tasksView"].forEach((s) => $(s).classList.add("hidden"));
+    ["#welcome", "#spaceView", "#settingsView", "#tasksView", "#usageView"].forEach((s) => $(s).classList.add("hidden"));
     if (taskTimer) { clearInterval(taskTimer); taskTimer = null; }
   }
 
@@ -887,6 +927,7 @@
     const [gid, tab] = decodeURIComponent(location.hash.slice(1)).split("/");
     if (gid === "settings") showSettings();
     else if (gid === "tasks") showTasks();
+    else if (gid === "usage") showUsage();
     else if (gid && state.spaces.some((s) => s.group_id === gid)) selectSpace(gid, tab || "graph");
     setInterval(loadStatus, 15000);
     setInterval(() => { if (!document.hidden) loadSpaces(); }, 60000);

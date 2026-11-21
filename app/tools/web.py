@@ -10,6 +10,7 @@ from typing import Any
 from google.genai import types
 
 from ..gemini_resilience import call_with_retry
+from ..usage import tracker
 from . import ToolContext, ToolError, tool
 
 # WMO 날씨 코드 → 한국어
@@ -164,6 +165,7 @@ async def web_search(args, ctx: ToolContext):
 
     resp = await call_with_retry(_call, limiter=ctx.limiter, max_retries=2, what="web_search",
                                  base_delay=2.0, max_delay=10.0)
+    await tracker.record_response("search", ctx.settings.chat_model, resp, grounded=1)
     sources = []
     try:
         meta = resp.candidates[0].grounding_metadata

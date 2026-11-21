@@ -19,6 +19,7 @@ from google.genai import types
 
 from .gemini_resilience import call_with_retry
 from .tools import ToolContext, declarations, run_tool
+from .usage import tracker
 
 if TYPE_CHECKING:  # pragma: no cover
     from .chat import ChatResponder
@@ -129,6 +130,7 @@ async def run_agent(
         resp = await call_with_retry(_call, limiter=chat.limiter, max_retries=chat.s.gemini_max_retries,
                                      what="agent", base_delay=4.0, max_delay=60.0)
         result.tokens += _usage_tokens(resp)
+        await tracker.record_response("task", model, resp)
         return resp
 
     stop_reason: str | None = None

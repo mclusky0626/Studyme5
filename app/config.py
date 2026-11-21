@@ -111,6 +111,15 @@ class Settings:
     task_daily_limit: int
     task_max_scheduled: int
 
+    # --- 사용량 / 추정 비용 (USD) ---
+    price_input_per_m: float
+    price_output_per_m: float
+    price_cached_per_m: float
+    price_embed_per_m: float
+    price_search_per_1k: float
+    search_free_per_month: int
+    usd_krw: float
+
     # --- 안정성 / 429 방어 ---
     max_concurrent_episodes: int
     max_concurrent_chats: int
@@ -175,6 +184,13 @@ class Settings:
             task_max_concurrent=_int("TASK_MAX_CONCURRENT", 1),
             task_daily_limit=_int("TASK_DAILY_LIMIT", 10),
             task_max_scheduled=_int("TASK_MAX_SCHEDULED", 5),
+            price_input_per_m=_float("PRICE_INPUT_PER_M", 0.30),
+            price_output_per_m=_float("PRICE_OUTPUT_PER_M", 2.50),
+            price_cached_per_m=_float("PRICE_CACHED_PER_M", 0.03),
+            price_embed_per_m=_float("PRICE_EMBED_PER_M", 0.15),
+            price_search_per_1k=_float("PRICE_SEARCH_PER_1K", 14.0),
+            search_free_per_month=_int("SEARCH_FREE_PER_MONTH", 5000),
+            usd_krw=_float("USD_KRW", 0.0),
             max_concurrent_episodes=_int("MAX_CONCURRENT_EPISODES", 1),
             max_concurrent_chats=_int("MAX_CONCURRENT_CHATS", 4),
             graphiti_max_coroutines=_int("GRAPHITI_MAX_COROUTINES", 4),

@@ -57,6 +57,7 @@ flowchart LR
 - `@라스페치아 …` / 봇 메시지에 답장 / DM → 대화
 - `/memory recall <질문>` 기억 검색 · `/memory me` 나에 대한 기억 · `/memory forget_me` 내 개인 기억 삭제 · `/memory save` · `/memory status`
 - `/task start <할 일>` 백그라운드 작업 · `/task list` · `/task cancel <번호>` (말로 "~조사해서 알려줘", "매일 8시에 ~해줘" 해도 됨)
+- `/usage [기간]` Gemini API 사용량·추정 비용 (서버 관리자/봇 주인) — 관리 웹 **📊 사용량**에서도 확인
 
 ## 프로젝트 구조
 
@@ -66,6 +67,7 @@ app/
   chat.py           답변 생성 + 함수 호출 루프
   agent.py          백그라운드 조사 에이전트 (긴 루프 + 한도)
   tasks.py          백그라운드·예약 작업 관리 (대기열, 예약, 재시작 복구)
+  usage.py          Gemini 사용량 기록·추정 비용
   memory.py         Graphiti(FalkorDB + Gemini) 장기 기억
   batcher.py        배칭·디바운스 저장, 재시도, 실패 보관
   persona.py        봇 이름·페르소나 (웹 > 파일 > .env > 기본값)

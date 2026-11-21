@@ -21,6 +21,8 @@ from graphiti_core.llm_client.config import ModelSize
 from graphiti_core.llm_client.errors import RateLimitError
 from graphiti_core.llm_client.gemini_client import GeminiClient
 
+from .usage import tracker
+
 log = logging.getLogger(__name__)
 T = TypeVar("T")
 
@@ -109,12 +111,17 @@ class ResilientGeminiClient(GeminiClient):
         model: str | None = None,
     ):
         parent = super()._generate_response
-        return await call_with_retry(
+        out = await call_with_retry(
             lambda: parent(messages, response_model, max_tokens, model_size, model=model),
             limiter=self._limiter,
             max_retries=self._rl_retries,
             what="LLM",
         )
+        try:  # (응답, 입력 토큰, 출력 토큰)
+            await tracker.record("memory", model or self.model or "gemini", input=out[1], output=out[2])
+        except Exception:  # noqa: BLE001
+            pass
+        return out
 
 
 class ResilientGeminiEmbedder(GeminiEmbedder):
@@ -125,13 +132,22 @@ class ResilientGeminiEmbedder(GeminiEmbedder):
 
     async def create(self, input_data):  # type: ignore[override]
         parent = super().create
-        return await call_with_retry(lambda: parent(input_data), limiter=self._limiter,
-                                     max_retries=self._rl_retries, what="embedding")
+        out = await call_with_retry(lambda: parent(input_data), limiter=self._limiter,
+                                    max_retries=self._rl_retries, what="embedding")
+        await self._track([input_data] if isinstance(input_data, str) else [])
+        return out
 
     async def create_batch(self, input_data_list: list[str]) -> list[list[float]]:
         parent = super().create_batch
-        return await call_with_retry(lambda: parent(input_data_list), limiter=self._limiter,
-                                     max_retries=self._rl_retries, what="embedding-batch")
+        out = await call_with_retry(lambda: parent(input_data_list), limiter=self._limiter,
+                                    max_retries=self._rl_retries, what="embedding-batch")
+        await self._track(input_data_list)
+        return out
+
+    async def _track(self, texts: list) -> None:
+        # 임베딩 응답에는 토큰 수가 없어 글자 수로 근사 (한국어 약 1.5자 = 1토큰)
+        chars = sum(len(t) for t in texts if isinstance(t, str))
+        await tracker.record("embedding", self.config.embedding_model, input=int(chars / 1.5) + 1)
 
 
 class ResilientGeminiReranker(GeminiRerankerClient):

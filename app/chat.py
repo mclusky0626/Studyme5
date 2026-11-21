@@ -19,6 +19,7 @@ from .gemini_resilience import RateLimiter, call_with_retry
 from .memory import MemoryContext
 from .persona import DEFAULT_PERSONA
 from .tools import ToolContext, declarations, run_tool
+from .usage import tracker
 
 log = logging.getLogger(__name__)
 
@@ -129,9 +130,11 @@ class ChatResponder:
                 model=self.s.chat_model, contents=contents, config=config)
 
         # 채팅 응답은 사용자가 기다리고 있으므로 재시도를 짧게(최대 3회) 가져간다.
-        return await call_with_retry(_call, limiter=self.limiter,
+        resp = await call_with_retry(_call, limiter=self.limiter,
                                      max_retries=min(3, self.s.gemini_max_retries),
                                      what="chat", base_delay=2.0, max_delay=15.0)
+        await tracker.record_response("chat", self.s.chat_model, resp)
+        return resp
 
     async def reply(
         self,

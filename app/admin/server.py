@@ -18,6 +18,7 @@ from ..gemini_resilience import RateLimiter
 from ..chat import ChatResponder, ShortLine
 from ..memory import MemoryContext, MemoryService
 from ..persona import MAX_NAME_CHARS, MAX_PERSONA_CHARS, PersonaStore
+from ..usage import format_report, report, tracker, usd_krw
 from .repo import GraphRepo
 
 log = logging.getLogger(__name__)
@@ -56,6 +57,7 @@ def create_app(repo: GraphRepo | None = None, persona: PersonaStore | None = Non
             await memory.start(required=True)
             app.state.repo = GraphRepo(memory)
             app.state.persona = PersonaStore(settings, lambda: memory.redis)
+            tracker.bind(lambda: memory.redis)
         else:
             app.state.repo = repo
             app.state.persona = persona or PersonaStore(settings, lambda: None)
@@ -142,6 +144,14 @@ def create_app(repo: GraphRepo | None = None, persona: PersonaStore | None = Non
             tool_ctx=chat.tool_context(),
         )
         return {"reply": reply}
+
+    @app.get("/api/usage")
+    async def usage(period: str = Query("month", pattern="^(today|week|month|last30)$")):
+        data = await report(settings, period)
+        krw = await usd_krw(settings)
+        data["usd_krw"] = krw
+        data["lines"] = format_report(data, krw)
+        return data
 
     @app.get("/api/tasks")
     async def tasks(request: Request):

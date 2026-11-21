@@ -26,6 +26,7 @@
       <div class="status-pill" id="botStatus" title="봇 상태">
         <span class="dot"></span><span class="label">확인 중…</span>
       </div>
+      <button class="btn settings-btn" id="usageBtn" title="Gemini API 사용량">📊<span class="hide-sm"> 사용량</span></button>
       <button class="btn settings-btn" id="tasksBtn" title="백그라운드·예약 작업">📋<span class="hide-sm"> 작업</span></button>
       <button class="btn settings-btn" id="settingsBtn" title="봇 이름·페르소나 설정">⚙<span class="hide-sm"> 봇 설정</span></button>
       <button class="icon-btn" id="themeBtn" aria-label="테마 전환" title="테마 전환">◐</button>
@@ -60,6 +61,32 @@
           <h1>기억 공간을 선택하세요</h1>
           <p>디스코드 서버(<code>guild-…</code>)와 DM(<code>dm-…</code>)마다 기억이 완전히 분리된 그래프로 저장됩니다.</p>
           <p class="muted">봇과 대화한 뒤 <b>8마디</b>가 쌓이거나 <b>90초</b> 동안 대화가 없으면 자동으로 저장돼요.</p>
+        </div>
+      </section>
+
+      <section class="settings-view hidden" id="usageView">
+        <div class="settings-head">
+          <div>
+            <h1>API 사용량</h1>
+            <p class="muted">봇이 모든 Gemini 호출의 토큰을 직접 세어 유료 단가로 계산한 <b>추정치</b>입니다. 정확한 청구액은 Google AI Studio 결제 화면이 기준입니다.</p>
+          </div>
+          <label class="select-wrap">기간
+            <select id="usagePeriod">
+              <option value="today">오늘</option>
+              <option value="week">최근 7일</option>
+              <option value="month" selected>이번 달</option>
+              <option value="last30">최근 30일</option>
+            </select>
+          </label>
+        </div>
+        <div class="usage-cards" id="usageCards"></div>
+        <div class="card settings-card" style="margin-top:14px">
+          <h3 class="card-title">항목별</h3>
+          <div id="usageLines" class="usage-lines"></div>
+        </div>
+        <div class="card settings-card" style="margin-top:14px">
+          <h3 class="card-title">일별 추정 비용</h3>
+          <div id="usageDays" class="usage-days"></div>
         </div>
       </section>
 
