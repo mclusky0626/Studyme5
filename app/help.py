@@ -82,6 +82,7 @@ def build_help(topic: str, bot_name: str) -> discord.Embed:
     if topic == "admin":
         return discord.Embed(title="🛡️ 관리자", color=COLOR, description=(
             "• `/usage` — Gemini API 사용량·추정 비용 (서버 관리 권한 필요)\n"
+            "• `/model show · list · set · reset` — 채팅 모델 보기·바꾸기 (재시작 없이 적용)\n"
             "• **관리 웹** (봇을 운영하는 PC에서 실행) — 기억 그래프 보기, 사실 수정·만료·삭제, 작업 관리, 페르소나 변경, 사용량\n"
             "• 자세한 운영 방법은 GitHub 의 `docs/GUIDE.md` 를 참고하세요."))
     # start (기본)
