@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import logging
 import secrets
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -46,6 +47,62 @@ class PersonaTest(PersonaUpdate):
     message: str = Field(min_length=1, max_length=500)
 
 
+
+# ---------------------------------------------------------------- 보안 도우미
+SECURITY_HEADERS = {
+    "X-Frame-Options": "DENY",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "Content-Security-Policy": (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' https://unpkg.com https://cdn.jsdelivr.net; "
+        "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+        "font-src 'self' https://cdn.jsdelivr.net data:; img-src 'self' data:; connect-src 'self'; "
+        "frame-ancestors 'none'"
+    ),
+}
+
+
+def is_proxied(request: Request) -> bool:
+    """Tailscale Funnel / Cloudflare Tunnel 같은 프록시를 거쳐 들어온 요청인지."""
+    h = request.headers
+    return any(k in h for k in ("x-forwarded-for", "cf-connecting-ip", "tailscale-funnel-request"))
+
+
+def client_ip(request: Request) -> str:
+    h = request.headers
+    ip = h.get("cf-connecting-ip") or h.get("x-forwarded-for", "").split(",")[0].strip()
+    return ip or (request.client.host if request.client else "?")
+
+
+class LoginGuard:
+    """IP별: 10분에 10번 틀리면 15분 잠금. 전체: 10분에 50번 틀리면 10분 잠금(프록시가 IP를 숨기는 경우 대비)."""
+
+    def __init__(self, per_ip: int = 10, total: int = 50, window: float = 600, ip_lock: float = 900,
+                 total_lock: float = 600) -> None:
+        self.per_ip, self.total, self.window = per_ip, total, window
+        self.ip_lock, self.total_lock = ip_lock, total_lock
+        self._fails: dict[str, list[float]] = {}
+        self._locked_until: dict[str, float] = {}
+
+    def _now(self) -> float:
+        return time.monotonic()
+
+    def locked(self, ip: str) -> int:
+        now = self._now()
+        until = max(self._locked_until.get(ip, 0), self._locked_until.get("*", 0))
+        return int(until - now) + 1 if until > now else 0
+
+    def fail(self, ip: str) -> None:
+        now = self._now()
+        for key, limit, lock in ((ip, self.per_ip, self.ip_lock), ("*", self.total, self.total_lock)):
+            hits = [x for x in self._fails.get(key, []) if now - x < self.window] + [now]
+            self._fails[key] = hits
+            if len(hits) >= limit:
+                self._locked_until[key] = now + lock
+                self._fails[key] = []
+
+
 def create_app(repo: GraphRepo | None = None, persona: PersonaStore | None = None) -> FastAPI:
     """repo 를 주입하면(테스트) FalkorDB 연결 없이 동작한다."""
 
@@ -70,22 +127,44 @@ def create_app(repo: GraphRepo | None = None, persona: PersonaStore | None = Non
 
     app = FastAPI(title="Memory Console", lifespan=lifespan, docs_url=None, redoc_url=None)
 
-    # ---------------------------------------------------------------- Basic 인증
+    # ---------------------------------------------------------------- Basic 인증 + 무차별 대입 방어
+    guard = LoginGuard()
+
     @app.middleware("http")
     async def basic_auth(request: Request, call_next):
-        if settings.admin_password and request.url.path != "/healthz":
-            ok = False
-            header = request.headers.get("authorization", "")
-            if header.lower().startswith("basic "):
-                try:
-                    user, _, pw = base64.b64decode(header[6:]).decode().partition(":")
-                    ok = secrets.compare_digest(user, settings.admin_user) and \
-                        secrets.compare_digest(pw, settings.admin_password)
-                except Exception:  # noqa: BLE001
-                    ok = False
-            if not ok:
-                return Response(status_code=401, headers={"WWW-Authenticate": 'Basic realm="memory"'})
-        return await call_next(request)
+        path = request.url.path
+        if path != "/healthz":
+            ip = client_ip(request)
+            proxied = is_proxied(request)
+            if not settings.admin_password and proxied:
+                # 터널(Funnel/Cloudflare)로 들어온 요청인데 비밀번호가 없으면 절대 열지 않는다
+                return Response("외부 접속에는 ADMIN_PASSWORD 설정이 필요합니다.", status_code=403,
+                                media_type="text/plain; charset=utf-8")
+            if settings.admin_password:
+                wait = guard.locked(ip)
+                if wait:
+                    return Response(f"로그인 실패가 많아 {wait}초 동안 잠겼습니다.", status_code=429,
+                                    headers={"Retry-After": str(wait)}, media_type="text/plain; charset=utf-8")
+                header = request.headers.get("authorization", "")
+                ok = False
+                if header.lower().startswith("basic "):
+                    try:
+                        user, _, pw = base64.b64decode(header[6:]).decode().partition(":")
+                        ok = secrets.compare_digest(user, settings.admin_user) and \
+                            secrets.compare_digest(pw, settings.admin_password)
+                    except Exception:  # noqa: BLE001
+                        ok = False
+                    if not ok:  # 자격 증명을 보냈는데 틀린 경우만 실패로 센다
+                        guard.fail(ip)
+                        log.warning("관리 웹 로그인 실패: %s%s", ip, " (터널)" if proxied else "")
+                if not ok:
+                    return Response(status_code=401, headers={"WWW-Authenticate": 'Basic realm="memory"'})
+        response = await call_next(request)
+        for k, v in SECURITY_HEADERS.items():
+            response.headers.setdefault(k, v)
+        if path.startswith("/api/"):
+            response.headers["Cache-Control"] = "no-store"
+        return response
 
     @app.exception_handler(ValueError)
     async def value_error(_: Request, exc: ValueError):

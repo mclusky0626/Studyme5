@@ -2,7 +2,7 @@
 
 [← README로 돌아가기](../README.md)
 
-**목차**: [사용자 체크리스트](#-사용자가-해야-할-일-체크리스트) · [관리 체계](#️-관리-체계-admin) · [페르소나](#-페르소나-바꾸기) · [대화 도구](#️-대화-도구-gemini-function-calling) · [백그라운드·예약 작업](#-백그라운드--예약-작업) · [유저별 기억](#-유저별-기억) · [사용량](#-api-사용량--비용) · [운영 명령어](#-운영-명령어) · [백업](#백업--복원) · [문제 해결](#문제-해결) · [설계 메모](#-설계-메모)
+**목차**: [사용자 체크리스트](#-사용자가-해야-할-일-체크리스트) · [관리 체계](#️-관리-체계-admin) · [페르소나](#-페르소나-바꾸기) · [대화 도구](#️-대화-도구-gemini-function-calling) · [백그라운드·예약 작업](#-백그라운드--예약-작업) · [유저별 기억](#-유저별-기억) · [사용량](#-api-사용량--비용) · [외부 접속](#-관리-웹-외부-접속) · [운영 명령어](#-운영-명령어) · [백업](#백업--복원) · [문제 해결](#문제-해결) · [설계 메모](#-설계-메모)
 
 ---
 
@@ -328,6 +328,47 @@ Gemini API 는 API 키로 사용량·청구액을 조회할 수 없어서, **봇
 - **추정치**입니다. 무료 티어를 쓰면 실제 청구는 0원이고, 유료라도 단가 변경·반올림 때문에 차이가 날 수 있습니다. 정확한 금액은 [Google AI Studio](https://aistudio.google.com) 의 사용량/결제 화면이 기준입니다.
 - 단가는 `.env` 의 `PRICE_*` 로 바꿀 수 있습니다 (기본: flash-lite 입력 $0.30 · 출력 $2.50 / 100만 토큰).
 - 기록은 이 기능을 넣은 시점부터 쌓입니다. 리랭커(거의 쓰이지 않음)는 집계에서 빠집니다.
+
+---
+
+## 🌐 관리 웹 외부 접속
+
+| 방법 | 누가 접속 가능 | 주소 | 준비물 |
+|---|---|---|---|
+| 같은 와이파이 | 집 안 기기 | `http://<PC IP>:8090` | 방화벽 설정 ([위](#다른-기기에서-접속-같은-와이파이--tailscale)) |
+| Tailscale (사설망) | 내 Tailscale 기기만 | `http://<Tailscale IP>:8090` | 각 기기에 Tailscale 앱 + 같은 계정 |
+| **Tailscale Funnel** (공개) | 인터넷의 누구나 *(비밀번호 필요)* | `https://<PC이름>.<tailnet>.ts.net` | Tailscale 만 있으면 됨, 도메인 불필요 |
+| **Cloudflare Tunnel** (공개) | 〃 | 내 도메인 또는 임시 `*.trycloudflare.com` | Cloudflare 계정 (임시 주소는 불필요) |
+
+### Tailscale Funnel (이 PC에 적용된 방식)
+
+```powershell
+tailscale funnel --bg 8090          # 켜기 (PC 재부팅 후에도 유지)
+tailscale funnel status             # 주소 확인
+tailscale funnel --https=443 off    # 끄기
+```
+
+- 처음 켤 때 tailnet 에서 Funnel 이 꺼져 있으면 링크가 나옵니다 → 브라우저로 열어 허용.
+- **PC 와 Tailscale 이 켜져 있어야** 접속됩니다. 관리 웹(8090)만 공개되고 FalkorDB Browser(3000)는 공개되지 않습니다.
+
+### Cloudflare Tunnel (Tailscale 이 없을 때)
+
+```powershell
+docker compose --profile quicktunnel up -d                      # 임시 주소 (계정 불필요, 재시작마다 바뀜)
+docker compose logs quicktunnel | findstr trycloudflare          # 주소 확인
+```
+
+고정 주소: Cloudflare 대시보드 → Zero Trust → Networks → Tunnels 에서 터널을 만들고 Public hostname 을 `http://admin:8000` 으로 지정 → 토큰을 `.env` 의 `CLOUDFLARE_TUNNEL_TOKEN` 에 넣고 `docker compose --profile tunnel up -d`.
+(Cloudflare Access 로 이메일 로그인까지 걸면 한층 안전합니다.)
+
+### 공개할 때의 보안 장치 (자동 적용)
+
+- **비밀번호 필수**: 터널로 들어온 요청인데 `ADMIN_PASSWORD` 가 비어 있으면 무조건 403 거부
+- **로그인 잠금**: 같은 IP 가 10분에 10번 틀리면 15분 잠금, 전체 10분에 50번 틀리면 10분 잠금 (로그에 `관리 웹 로그인 실패 … (터널)` 기록)
+- **보안 헤더**: 다른 사이트에 끼워 넣기 금지(클릭재킹 방지), 콘텐츠 보안 정책(CSP), API 응답 캐시 금지
+- HTTPS 는 Funnel/Cloudflare 가 처리 (비밀번호가 암호화되어 전송)
+
+**사용자가 할 일**: `ADMIN_PASSWORD` 를 **길고 추측 불가능하게**(16자 이상) 유지하고, 공유했던 사람이 빠지면 바꾸세요. 관리 웹에서는 기억 삭제도 가능하므로 비밀번호 = 모든 기억에 대한 권한입니다. 필요 없을 때는 Funnel 을 꺼 두는 게 가장 안전합니다.
 
 ---
 
