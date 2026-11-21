@@ -18,7 +18,8 @@ from zoneinfo import ZoneInfo
 from google.genai import types
 
 from .gemini_resilience import call_with_retry
-from .tools import ToolContext, declarations, run_tool
+from .backends import make_backend
+from .tools import ToolContext, run_tool, schemas
 from .usage import tracker
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -127,71 +128,64 @@ async def run_agent(
     mode: str = "report",
 ) -> AgentResult:
     started = time.monotonic()
-    decls = [d for d in declarations(ctx) if d.name not in AGENT_EXCLUDED_TOOLS]
+    tools = [s for s in schemas(ctx) if s["name"] not in AGENT_EXCLUDED_TOOLS]
     system = (FOLLOWUP_PROMPT if mode == "followup" else AGENT_PROMPT).format(
         bot_name=bot_name, goal=goal, max_steps=limits.max_steps, persona=persona,
         now=datetime.now(KST).strftime("%Y-%m-%d (%a) %H:%M KST"),
     )
-    base = types.GenerateContentConfig(
-        system_instruction=system, temperature=0.4, max_output_tokens=chat.s.chat_max_output_tokens,
-        thinking_config=types.ThinkingConfig(thinking_level="low"),
-        tools=[types.Tool(function_declarations=decls)] if decls else None,
-    )
-    final_cfg = base.model_copy(update={"tool_config": types.ToolConfig(
-        function_calling_config=types.FunctionCallingConfig(mode="NONE"))} if decls else {})
-    contents = [types.Content(role="user", parts=[types.Part.from_text(text=f"작업을 시작하라: {goal}")])]
+    # 제공자(CHAT_PROVIDER)에 맞는 어댑터. Gemini 는 작업용 모델·사고 수준을 따로 쓴다.
+    gemini = chat.s.chat_provider == "gemini"
+    be = make_backend(chat.s, chat.limiter, model=model if gemini else None, thinking_level="low")
+    conv = be.start(system, f"작업을 시작하라: {goal}")
     result = AgentResult(text="")
+    category = "chat" if mode == "followup" else "task"
 
-    async def generate(cfg):
-        async def _call():
-            return await chat.client.aio.models.generate_content(model=model, contents=contents, config=cfg)
-        resp = await call_with_retry(_call, limiter=chat.limiter, max_retries=chat.s.gemini_max_retries,
-                                     what="agent", base_delay=4.0, max_delay=60.0)
-        result.tokens += _usage_tokens(resp)
-        await tracker.record_response("task", model, resp)
-        return resp
+    async def generate(allow_tools: bool):
+        step = await be.step(conv, tools, allow_tools=allow_tools, temperature=0.4,
+                             max_tokens=chat.s.chat_max_output_tokens, category=category)
+        result.tokens += step.tokens
+        return step
 
     stop_reason: str | None = None
-    resp = None
-    while True:
-        if is_cancelled is not None and await is_cancelled():
-            result.cancelled = True
-            result.text = "작업이 취소되었습니다."
-            break
-        elapsed = time.monotonic() - started
-        if result.steps >= limits.max_steps:
-            stop_reason = f"{limits.max_steps}단계"
-        elif elapsed >= limits.max_seconds:
-            stop_reason = f"{limits.max_seconds}초"
-        elif result.tokens >= limits.max_tokens:
-            stop_reason = f"{limits.max_tokens:,}토큰"
-        if stop_reason:
-            contents.append(types.Content(role="user", parts=[
-                types.Part.from_text(text=FINALIZE.format(reason=stop_reason))]))
-            resp = await generate(final_cfg)
-            result.stopped_by = stop_reason
-            break
+    step = None
+    try:
+        while True:
+            if is_cancelled is not None and await is_cancelled():
+                result.cancelled = True
+                result.text = "작업이 취소되었습니다."
+                break
+            elapsed = time.monotonic() - started
+            if result.steps >= limits.max_steps:
+                stop_reason = f"{limits.max_steps}단계"
+            elif elapsed >= limits.max_seconds:
+                stop_reason = f"{limits.max_seconds}초"
+            elif result.tokens >= limits.max_tokens:
+                stop_reason = f"{limits.max_tokens:,}토큰"
+            if stop_reason:
+                be.add_user(conv, FINALIZE.format(reason=stop_reason))
+                step = await generate(allow_tools=False)
+                result.stopped_by = stop_reason
+                break
 
-        resp = await generate(base)
-        calls = resp.function_calls or []
-        if not calls:
-            break
-        result.steps += 1
-        contents.append(resp.candidates[0].content)
-        desc = ", ".join(_describe(fc) for fc in calls)
-        if on_progress is not None:
-            try:
-                await on_progress(result.steps, desc)
-            except Exception:  # noqa: BLE001 - 진행 표시 실패는 무시
-                pass
-        outputs = await asyncio.gather(*(run_tool(fc.name, fc.args, ctx) for fc in calls))
-        contents.append(types.Content(role="user", parts=[
-            types.Part(function_response=types.FunctionResponse(id=fc.id, name=fc.name, response=out))
-            for fc, out in zip(calls, outputs, strict=True)
-        ]))
+            step = await generate(allow_tools=True)
+            if not step.calls:
+                break
+            result.steps += 1
+            be.add_model_turn(conv, step)
+            desc = ", ".join(_describe(c) for c in step.calls)
+            if on_progress is not None:
+                try:
+                    await on_progress(result.steps, desc)
+                except Exception:  # noqa: BLE001 - 진행 표시 실패는 무시
+                    pass
+            outputs = await asyncio.gather(*(run_tool(c.name, c.args, ctx) for c in step.calls))
+            be.add_tool_results(conv, list(zip(step.calls, outputs)))
+    finally:
+        await be.aclose()
 
+    resp = step
     if not result.cancelled:
-        result.text = ((getattr(resp, "text", None) or "").strip() if resp is not None else "") \
+        result.text = (resp.text if resp is not None else "") \
             or "작업을 끝냈지만 보고서를 만들지 못했어요. 다시 시도해 주세요."
     result.tools = list(ctx.used)
     result.seconds = time.monotonic() - started

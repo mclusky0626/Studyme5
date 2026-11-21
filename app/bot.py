@@ -127,8 +127,9 @@ class MemoryBot(discord.Client):
                 break
 
     async def on_ready(self) -> None:
-        log.info("로그인: %s (id=%s) — 서버 %d개, 모델 %s", self.user, self.user.id,
-                 len(self.guilds), self.s.chat_model)
+        log.info("로그인: %s (id=%s) — 서버 %d개, 채팅 %s(%s) · 기억 %s · 검색 %s", self.user, self.user.id,
+                 len(self.guilds), self.s.active_chat_model, self.s.chat_provider, self.s.memory_provider,
+                 self.s.search_provider)
         await self.change_presence(activity=discord.Game(name="@멘션하면 대답해요"))
 
     async def close(self) -> None:
@@ -194,7 +195,9 @@ class MemoryBot(discord.Client):
         return {
             "bot": str(self.user) if self.user else None,
             "guilds": len(self.guilds),
-            "chat_model": self.s.chat_model,
+            "chat_model": self.s.active_chat_model,
+            "chat_provider": self.s.chat_provider,
+            "memory_provider": self.s.memory_provider,
             "graph_model": self.s.llm_model,
             "embedding_model": self.s.embedding_model,
             "capture_all_messages": self.s.capture_all_messages,

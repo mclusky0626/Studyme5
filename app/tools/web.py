@@ -152,6 +152,8 @@ async def web_search(args, ctx: ToolContext):
         if detailed else
         "웹 검색 결과를 바탕으로 질문에 필요한 핵심 사실만 한국어로 5문장 이내로 정리하라."
     )
+    if ctx.settings.search_provider == "openai":
+        return await _openai_search(ctx, query, guide, detailed)
     config = types.GenerateContentConfig(
         tools=[types.Tool(google_search=types.GoogleSearch())],
         temperature=0.2,
@@ -282,3 +284,35 @@ async def fetch_url(args, ctx: ToolContext):
         text = text[max(0, i - 2000): i + _MAX_PAGE_CHARS - 2000]
     truncated = len(text) > _MAX_PAGE_CHARS
     return {"url": url, "title": title[:200], "text": text[:_MAX_PAGE_CHARS], "truncated": truncated}
+
+
+
+async def _openai_search(ctx: ToolContext, query: str, guide: str, detailed: bool) -> dict:
+    """SEARCH_PROVIDER=openai: OpenAI Responses API 의 내장 web_search 도구."""
+    client = ctx.openai_client
+    if client is None:
+        raise ToolError("OpenAI 검색이 설정되지 않았습니다 (OPENAI_API_KEY)")
+
+    async def _call():
+        return await client.responses.create(
+            model=ctx.settings.openai_model, tools=[{"type": "web_search"}], input=query,
+            instructions=guide + " 날짜·수치·고유명사는 정확히 쓰고, 검색으로 확인되지 않은 내용은 지어내지 마라.",
+            max_output_tokens=4000 if detailed else 1200)
+
+    try:
+        resp = await call_with_retry(_call, limiter=ctx.limiter, max_retries=2, what="web_search",
+                                     base_delay=2.0, max_delay=10.0)
+    except Exception as exc:  # 호환 서버(Ollama 등)는 웹 검색 도구가 없다
+        raise ToolError(f"이 모델/서버는 웹 검색을 지원하지 않습니다: {str(exc)[:120]}") from exc
+    usage = getattr(resp, "usage", None)
+    if usage is not None:
+        await tracker.record("search", ctx.settings.openai_model, input=int(usage.input_tokens or 0),
+                             output=int(usage.output_tokens or 0), grounded=1)
+    sources = []
+    for item in getattr(resp, "output", []) or []:
+        for part in getattr(item, "content", None) or []:
+            for ann in getattr(part, "annotations", None) or []:
+                title = getattr(ann, "title", None) or getattr(ann, "url", None)
+                if title and title not in sources:
+                    sources.append(title)
+    return {"query": query, "summary": (resp.output_text or "").strip() or "검색 결과 없음", "sources": sources[:5]}

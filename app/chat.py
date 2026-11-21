@@ -18,7 +18,8 @@ from .config import Settings
 from .gemini_resilience import RateLimiter, call_with_retry
 from .memory import MemoryContext
 from .persona import DEFAULT_PERSONA
-from .tools import ToolContext, declarations, run_tool
+from .backends import make_backend
+from .tools import ToolContext, run_tool, schemas
 from .usage import tracker
 
 log = logging.getLogger(__name__)
@@ -71,23 +72,30 @@ class ChatResponder:
     def __init__(self, settings: Settings, limiter: RateLimiter) -> None:
         self.s = settings
         self.limiter = limiter
+        # 채팅·백그라운드 작업용 모델 (CHAT_PROVIDER=gemini|openai)
+        self.backend = make_backend(settings, limiter)
+        # 웹 검색 도구용 클라이언트 (SEARCH_PROVIDER)
         self.client = genai.Client(api_key=settings.gemini_api_key or "missing-api-key")
+        self.openai_client = None
+        if settings.search_provider == "openai" or settings.chat_provider == "openai":
+            from openai import AsyncOpenAI
+
+            self.openai_client = AsyncOpenAI(api_key=settings.openai_api_key or "not-needed",
+                                             base_url=settings.openai_base_url or None)
         self.http = httpx.AsyncClient(timeout=12.0, headers={"User-Agent": "discord-memory-bot/1.0"})
         self._sem = asyncio.Semaphore(max(1, settings.max_concurrent_chats))
         self._tz = ZoneInfo("Asia/Seoul")
-        self._thinking = (
-            types.ThinkingConfig(thinking_level=settings.chat_thinking_level)
-            if settings.chat_thinking_level
-            else None
-        )
 
     async def aclose(self) -> None:
         await self.http.aclose()
+        await self.backend.aclose()
+        if self.openai_client is not None:
+            await self.openai_client.close()
 
     def tool_context(self, **kwargs: Any) -> ToolContext:
         """메시지별 도구 컨텍스트 (공용 서비스 + 채널/사용자 정보)."""
         return ToolContext(settings=self.s, genai_client=self.client, limiter=self.limiter,
-                           http=self.http, **kwargs)
+                           http=self.http, openai_client=self.openai_client, **kwargs)
 
     # ------------------------------------------------------------------ 프롬프트 (캐시 친화적 배치)
     # Gemini 는 요청의 "앞부분"이 이전 요청과 똑같으면 자동 캐시(약 90% 할인)한다.
@@ -145,18 +153,6 @@ class ChatResponder:
         lines.append(f"{current.speaker}: {current.text}")
         return "\n".join(lines)
 
-    async def _generate(self, contents, config):
-        async def _call():
-            return await self.client.aio.models.generate_content(
-                model=self.s.chat_model, contents=contents, config=config)
-
-        # 채팅 응답은 사용자가 기다리고 있으므로 재시도를 짧게(최대 3회) 가져간다.
-        resp = await call_with_retry(_call, limiter=self.limiter,
-                                     max_retries=min(3, self.s.gemini_max_retries),
-                                     what="chat", base_delay=2.0, max_delay=15.0)
-        await tracker.record_response("chat", self.s.chat_model, resp)
-        return resp
-
     async def reply(
         self,
         *,
@@ -168,60 +164,38 @@ class ChatResponder:
         persona: str | None = None,
         tool_ctx: ToolContext | None = None,
     ) -> str:
-        decls = declarations(tool_ctx) if tool_ctx is not None else []
-        system_prompt = self.build_system_prompt(bot_name=bot_name, persona=persona, with_tools=bool(decls))
+        tools = schemas(tool_ctx) if tool_ctx is not None else []
+        system_prompt = self.build_system_prompt(bot_name=bot_name, persona=persona, with_tools=bool(tools))
         user_text = self.build_user_content(history, current, memory=memory, place=place)
-        contents: list[types.Content] = [types.Content(role="user", parts=[types.Part.from_text(text=user_text)])]
-        base = types.GenerateContentConfig(
-            system_instruction=system_prompt,
-            temperature=self.s.chat_temperature,
-            max_output_tokens=self.s.chat_max_output_tokens,
-            thinking_config=self._thinking,
-        )
-        with_tools = base.model_copy(update={
-            "tools": [types.Tool(function_declarations=decls)] if decls else None,
-        })
-        no_tools = base.model_copy(update={
-            "tools": [types.Tool(function_declarations=decls)] if decls else None,
-            "tool_config": types.ToolConfig(
-                function_calling_config=types.FunctionCallingConfig(mode="NONE")) if decls else None,
-        })
+        be = self.backend
+        conv = be.start(system_prompt, user_text)
 
         async with self._sem:
-            response = None
-            max_steps = max(0, self.s.chat_max_tool_steps) if decls else 0
+            step = None
+            max_steps = max(0, self.s.chat_max_tool_steps) if tools else 0
             nudged = False
-            step = 0
+            n = 0
             while True:
-                last = step >= max_steps
-                response = await self._generate(contents, no_tools if last else with_tools)
-                calls = response.function_calls or []
-                if not calls:
-                    draft = (getattr(response, "text", None) or "").strip()
-                    # 약속만 하고 끝난 답변이면 한 번 더 기회를 준다 (마지막 단계여도 도구 없이 완성하게)
-                    deferred = tool_ctx is not None and any(n in DEFERRING_TOOLS for n in tool_ctx.used)
-                    if not nudged and not deferred and draft and PROMISE_RE.search(draft[-PROMISE_TAIL:]) and response.candidates:
-                        log.info("약속형 답변 감지 → 완성 요청: %s", draft[-120:].replace("\n", " "))
+                last = n >= max_steps
+                step = await be.step(conv, tools, allow_tools=not last,
+                                     max_tokens=self.s.chat_max_output_tokens, category="chat")
+                if not step.calls:
+                    deferred = tool_ctx is not None and any(x in DEFERRING_TOOLS for x in tool_ctx.used)
+                    # 약속만 하고 끝난 답변이면 한 번 더 기회를 준다
+                    if not nudged and not deferred and step.text and PROMISE_RE.search(step.text[-PROMISE_TAIL:]):
+                        log.info("약속형 답변 감지 → 완성 요청: %s", step.text[-120:].replace("\n", " "))
                         nudged = True
-                        contents.append(response.candidates[0].content)
-                        contents.append(types.Content(role="user", parts=[types.Part.from_text(text=NUDGE)]))
-                        step += 1
+                        be.add_model_turn(conv, step)
+                        be.add_user(conv, NUDGE)
+                        n += 1
                         continue
                     break
                 if last:
                     break
-                step += 1
-                # 모델의 함수 호출 턴(사고 서명 포함)을 그대로 대화에 붙인 뒤 결과를 돌려준다.
-                contents.append(response.candidates[0].content)
-                results = await asyncio.gather(*(run_tool(fc.name, fc.args, tool_ctx) for fc in calls))
-                contents.append(types.Content(role="user", parts=[
-                    types.Part(function_response=types.FunctionResponse(id=fc.id, name=fc.name, response=res))
-                    for fc, res in zip(calls, results, strict=True)
-                ]))
+                n += 1
+                be.add_model_turn(conv, step)
+                results = await asyncio.gather(*(run_tool(c.name, c.args, tool_ctx) for c in step.calls))
+                be.add_tool_results(conv, list(zip(step.calls, results)))
 
-        text = (getattr(response, "text", None) or "").strip() if response is not None else ""
-        usage = getattr(response, "usage_metadata", None)
-        if usage is not None:
-            log.debug("chat tokens in=%s out=%s think=%s", usage.prompt_token_count,
-                      usage.candidates_token_count, getattr(usage, "thoughts_token_count", None))
+        text = step.text if step is not None else ""
         return text or "음... 지금은 뭐라고 답해야 할지 모르겠어요. 다시 한 번 말해 주실래요?"

@@ -71,11 +71,36 @@ def _user_mode() -> str:
     return "full" if _bool("USER_MEMORY", True) else "off"
 
 
+def _provider(name: str) -> str:
+    """gemini | openai. 지정이 없으면 Gemini 키가 있으면 gemini, 없고 OpenAI 키만 있으면 openai."""
+    value = (_env(name) or _env("LLM_PROVIDER") or "").lower()
+    if value in {"gemini", "openai"}:
+        return value
+    if not _env("GEMINI_API_KEY", "GOOGLE_API_KEY", "API") and (_env("OPENAI_API_KEY") or _env("OPENAI_BASE_URL")):
+        return "openai"
+    return "gemini"
+
+
 @dataclass(frozen=True)
 class Settings:
     # --- 비밀값 ---
     discord_token: str | None
     gemini_api_key: str | None
+    openai_api_key: str | None
+
+    # --- 제공자 선택 (gemini | openai) ---
+    chat_provider: str          # 채팅 답변·백그라운드 작업 (함수 호출 포함)
+    memory_provider: str        # Graphiti 기억 추출·임베딩 (바꾸면 기존 기억과 벡터가 섞이지 않게 주의)
+    search_provider: str        # web_search 도구
+    openai_base_url: str | None # OpenAI 호환 서버(Ollama, LM Studio 등) 주소
+    openai_model: str
+    openai_small_model: str
+    openai_embedding_model: str
+    openai_reasoning: str | None
+    openai_price_input_per_m: float
+    openai_price_output_per_m: float
+    openai_price_cached_per_m: float
+    openai_price_embed_per_m: float
 
     # --- 모델 (기본값 오버라이드: OpenAI 대신 전부 Gemini) ---
     llm_model: str
@@ -161,6 +186,19 @@ class Settings:
         return cls(
             discord_token=_env("DISCORD_TOKEN", "DISCORD_BOT_TOKEN", "TOKEN"),
             gemini_api_key=_env("GEMINI_API_KEY", "GOOGLE_API_KEY", "API"),
+            openai_api_key=_env("OPENAI_API_KEY"),
+            chat_provider=_provider("CHAT_PROVIDER"),
+            memory_provider=_provider("MEMORY_PROVIDER"),
+            search_provider=_provider("SEARCH_PROVIDER"),
+            openai_base_url=_env("OPENAI_BASE_URL"),
+            openai_model=_env("OPENAI_MODEL", default="gpt-6-luna"),
+            openai_small_model=_env("OPENAI_SMALL_MODEL", default=_env("OPENAI_MODEL", default="gpt-6-luna")),
+            openai_embedding_model=_env("OPENAI_EMBEDDING_MODEL", default="text-embedding-3-small"),
+            openai_reasoning=_env("OPENAI_REASONING", default="low"),
+            openai_price_input_per_m=_float("OPENAI_PRICE_INPUT_PER_M", 0.0),
+            openai_price_output_per_m=_float("OPENAI_PRICE_OUTPUT_PER_M", 0.0),
+            openai_price_cached_per_m=_float("OPENAI_PRICE_CACHED_PER_M", 0.0),
+            openai_price_embed_per_m=_float("OPENAI_PRICE_EMBED_PER_M", 0.02),
             llm_model=base_model,
             llm_small_model=_env("GEMINI_SMALL_MODEL", default=base_model),
             reranker_model=_env("GEMINI_RERANKER_MODEL", default=base_model),
@@ -224,6 +262,22 @@ class Settings:
             admin_user=_env("ADMIN_USER", default="admin"),
             admin_password=_env("ADMIN_PASSWORD"),
         )
+
+    def require_providers(self) -> None:
+        """선택한 제공자에 필요한 키가 있는지 확인."""
+        need = {self.chat_provider, self.memory_provider, self.search_provider}
+        missing = []
+        if "gemini" in need and not self.gemini_api_key:
+            missing.append("GEMINI_API_KEY (또는 API)")
+        if "openai" in need and not (self.openai_api_key or self.openai_base_url):
+            missing.append("OPENAI_API_KEY (또는 OPENAI_BASE_URL)")
+        if missing:
+            raise SystemExit(f"[설정 오류] 선택한 제공자에 필요한 키가 없습니다: {', '.join(missing)} "
+                             f"(CHAT={self.chat_provider}, MEMORY={self.memory_provider}, SEARCH={self.search_provider})")
+
+    @property
+    def active_chat_model(self) -> str:
+        return self.openai_model if self.chat_provider == "openai" else self.chat_model
 
     def require(self, *fields: str) -> None:
         missing = [f for f in fields if not getattr(self, f)]

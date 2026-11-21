@@ -116,6 +116,12 @@ def _empty() -> dict[str, int]:
     return {f: 0 for f in FIELDS}
 
 
+def _prices_for(model: str, prices: dict[str, float]) -> dict[str, float]:
+    if model.startswith("gemini") or "openai" not in prices:
+        return prices
+    return {**prices, **prices["openai"]}
+
+
 def summarize(raw: dict[str, dict[str, int]], prices: dict[str, float], *, month_grounded: int = 0) -> dict:
     """일별 원자료 → 카테고리/일자별 합계와 추정 비용(USD)."""
     by_cat: dict[str, dict[str, int]] = defaultdict(_empty)
@@ -130,15 +136,19 @@ def summarize(raw: dict[str, dict[str, int]], prices: dict[str, float], *, month
                 continue
             by_cat[cat][f] += val
             day_tot[f] += val
-        for cat, c in _per_cat(fields).items():
-            day_cost += _cost(cat, c, prices)
+        for (cat, model), c in _per_cat_model(fields).items():
+            day_cost += _cost(cat, c, _prices_for(model, prices))
         by_day[day] = {**day_tot, "cost_usd": round(day_cost, 6)}
 
+    cat_cost: dict[str, float] = defaultdict(float)
+    for fields in raw.values():
+        for (cat, model), c in _per_cat_model(fields).items():
+            cat_cost[cat] += _cost(cat, c, _prices_for(model, prices))
     total = _empty()
     cost = 0.0
     cats = {}
     for cat, c in by_cat.items():
-        cc = _cost(cat, c, prices)
+        cc = cat_cost[cat]
         cats[cat] = {**c, "cost_usd": round(cc, 6), "label": CATEGORY_LABEL.get(cat, cat)}
         cost += cc
         for f in FIELDS:
@@ -156,6 +166,17 @@ def summarize(raw: dict[str, dict[str, int]], prices: dict[str, float], *, month
                    "billable": billable, "cost_usd": round(search_cost, 6)},
         "cost_usd": round(cost, 6),
     }
+
+
+def _per_cat_model(fields: dict[str, int]) -> dict[tuple[str, str], dict[str, int]]:
+    out: dict[tuple[str, str], dict[str, int]] = defaultdict(_empty)
+    for key, val in fields.items():
+        try:
+            cat, model, f = key.split("|")
+        except ValueError:
+            continue
+        out[(cat, model)][f] += val
+    return out
 
 
 def _per_cat(fields: dict[str, int]) -> dict[str, dict[str, int]]:
@@ -183,6 +204,8 @@ def prices_from(settings) -> dict[str, float]:
         "input_per_m": settings.price_input_per_m, "output_per_m": settings.price_output_per_m,
         "cached_per_m": settings.price_cached_per_m, "embed_per_m": settings.price_embed_per_m,
         "search_per_1k": settings.price_search_per_1k, "search_free_per_month": settings.search_free_per_month,
+        "openai": {"input_per_m": settings.openai_price_input_per_m, "output_per_m": settings.openai_price_output_per_m,
+                   "cached_per_m": settings.openai_price_cached_per_m, "embed_per_m": settings.openai_price_embed_per_m},
     }
 
 

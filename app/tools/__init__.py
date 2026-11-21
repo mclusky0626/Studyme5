@@ -43,6 +43,7 @@ class ToolContext:
     memory: "MemoryService | None" = None
     reminders: "ReminderStore | None" = None
     tasks: "TaskManager | None" = None
+    openai_client: Any = None   # SEARCH_PROVIDER=openai 일 때 web_search 용
     message_id: int | None = None
     group_id: str | None = None
     channel_id: int | None = None
@@ -94,6 +95,14 @@ def enabled_names(settings: "Settings") -> set[str]:
     if raw in {"none", "off", "false", "0"}:
         return set()
     return {n.strip() for n in raw.split(",") if n.strip() in TOOLS}
+
+
+def schemas(ctx: ToolContext) -> list[dict[str, Any]]:
+    """제공자 중립 도구 정의 (name, description, JSON 스키마) — Gemini·OpenAI 모두 이걸로 변환."""
+    _load_modules()
+    names = enabled_names(ctx.settings)
+    return [{"name": s.name, "description": s.description, "parameters": s.parameters}
+            for s in TOOLS.values() if s.name in names and s.available(ctx)]
 
 
 def declarations(ctx: ToolContext) -> list[types.FunctionDeclaration]:

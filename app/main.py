@@ -44,7 +44,8 @@ async def _amain() -> None:
 
 def run() -> None:
     setup_logging(settings.log_level)
-    settings.require("discord_token", "gemini_api_key")
+    settings.require("discord_token")
+    settings.require_providers()
     try:
         asyncio.run(_amain())
     except KeyboardInterrupt:

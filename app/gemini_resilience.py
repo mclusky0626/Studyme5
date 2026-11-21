@@ -59,6 +59,11 @@ def is_retryable(exc: BaseException | None) -> bool:
             return True
         if isinstance(exc, (asyncio.TimeoutError, ConnectionError)):
             return True
+        status = getattr(exc, "status_code", None)  # openai.APIStatusError
+        if status in _RETRYABLE_HTTP:
+            return True
+        if type(exc).__name__ in {"APIConnectionError", "APITimeoutError", "RateLimitError", "InternalServerError"}:
+            return True
         text = str(exc).lower()
         if "429" in text or any(t in text for t in _RETRYABLE_TEXT):
             return True

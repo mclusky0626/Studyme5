@@ -26,6 +26,7 @@ flowchart LR
 - **예약 작업** — "매일 아침 8시에 날씨랑 뉴스 요약해줘" 같은 반복 작업
 - **유저별 기억** — 서버 기억과 별개로 사람마다 개인 기억 그래프(`user-…`)가 쌓이고, 관리 웹에서 유저별 관계도를 볼 수 있음 ([유저 기억](docs/FEATURES.md#-유저별-기억))
 - **관리 웹** — 기억 그래프 시각화, 사실 수정·만료·삭제, 원본 대화, 의미 검색, 저장 로그 ([관리 체계](docs/ADMIN.md#️-관리-체계-admin))
+- **AI 제공자 선택** — Gemini 기본, `.env` 로 OpenAI 나 노트북의 로컬 모델(Ollama 등 OpenAI 호환)로 전환. 함수 호출·도구 그대로 동작 ([제공자 바꾸기](docs/SETUP.md#-ai-제공자-바꾸기-gemini--openai--로컬-모델))
 - **외부 접속** — 관리 웹을 집 밖·다른 사람에게 `https://` 주소로 공개 (Tailscale Funnel 또는 Cloudflare Tunnel, 로그인 잠금·보안 헤더 적용) ([외부 접속](docs/ADMIN.md#-관리-웹-외부-접속))
 - **페르소나** — 관리 웹 ⚙ 봇 설정 또는 `config/persona.md` 로 말투·성격 변경, 재시작 불필요 ([페르소나](docs/FEATURES.md#-페르소나-바꾸기))
 
@@ -67,6 +68,7 @@ flowchart LR
 app/
   bot.py            디스코드 봇 (메시지 처리, 슬래시 명령, 리마인더 발송)
   chat.py           답변 생성 + 함수 호출 루프
+  backends.py       Gemini / OpenAI 어댑터 (함수 호출 형식 변환)
   agent.py          백그라운드 조사 에이전트 (긴 루프 + 한도)
   tasks.py          백그라운드·예약 작업 관리 (대기열, 예약, 재시작 복구)
   usage.py          Gemini 사용량 기록·추정 비용

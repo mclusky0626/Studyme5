@@ -108,3 +108,22 @@ python main.py admin    # 관리 웹 → http://localhost:8000 (FalkorDB 필요)
 | 저장 실패분이 걱정됨 | `bot_data` 볼륨의 `failed_episodes.jsonl`에 보관 → 봇 재시작/DB 재연결 시 자동 재처리 |
 | 페르소나가 안 바뀜 | 관리 웹 상단 배지가 "관리 웹에서 설정한 값"이면 파일보다 웹 값이 우선. **파일 값으로 되돌리기** 클릭 |
 
+---
+
+## 🔀 AI 제공자 바꾸기 (Gemini / OpenAI / 로컬 모델)
+
+`.env` 에서 용도별로 고를 수 있습니다. 바꾼 뒤 `docker compose up -d`.
+
+| 설정 | 무엇에 쓰나 | 값 |
+|---|---|---|
+| `CHAT_PROVIDER` | 채팅 답변, 백그라운드·예약 작업 (**함수 호출 포함**) | `gemini` / `openai` |
+| `MEMORY_PROVIDER` | 기억 추출(Graphiti) · 임베딩 | `gemini` / `openai` |
+| `SEARCH_PROVIDER` | `web_search` 도구 | `gemini`(구글 검색) / `openai`(OpenAI 웹 검색) |
+| `LLM_PROVIDER` | 위 셋을 한 번에 | |
+
+- **OpenAI**: `OPENAI_API_KEY`, `OPENAI_MODEL` (기본 `gpt-6-luna`). 함수 호출·도구·리마인더·작업이 Gemini 와 똑같이 동작합니다.
+- **노트북의 로컬 모델** (Ollama, LM Studio 등 OpenAI 호환 서버): `CHAT_PROVIDER=openai` + `OPENAI_BASE_URL=http://host.docker.internal:11434/v1` + `OPENAI_MODEL=<모델 이름>`. 토큰 비용 0 이지만 **함수 호출을 지원하는 모델**이어야 도구가 동작하고, 웹 검색은 `SEARCH_PROVIDER=gemini` 로 두세요.
+- **섞어 쓰기 예**: 채팅은 OpenAI, 기억·검색은 Gemini → `CHAT_PROVIDER=openai` 만 설정.
+- ⚠️ `MEMORY_PROVIDER` 를 바꾸면 임베딩 모델이 달라져 **기존 기억과 검색이 맞지 않습니다.** 기존 기억을 계속 쓰려면 기억은 원래 제공자로 두세요.
+- 비용 추정(`/usage`)은 모델 이름으로 단가를 고릅니다 (`gemini-*` → `PRICE_*`, 그 외 → `OPENAI_PRICE_*`). OpenAI 단가는 기본 0 이니 쓰는 모델 가격으로 채우세요. 기억을 OpenAI 로 돌릴 때의 기억 저장 비용은 집계되지 않습니다.
+

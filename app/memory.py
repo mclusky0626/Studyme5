@@ -202,6 +202,31 @@ class MemoryService:
             limiter=limiter,
             max_retries=retries,
         )
+        if settings.memory_provider == "openai":
+            self._use_openai(settings)
+
+    def _use_openai(self, s: Settings) -> None:
+        """MEMORY_PROVIDER=openai: Graphiti 의 OpenAI 클라이언트로 교체.
+        OPENAI_BASE_URL 이 있으면 호환 서버(Ollama·LM Studio 등)용 범용 클라이언트를 쓴다.
+        주의: 임베딩 모델이 바뀌면 기존 기억의 벡터와 비교가 안 되므로 새 기억 공간에서 쓰는 것을 권장."""
+        from graphiti_core.cross_encoder.openai_reranker_client import OpenAIRerankerClient
+        from graphiti_core.embedder.openai import OpenAIEmbedder, OpenAIEmbedderConfig
+        from graphiti_core.llm_client.openai_client import OpenAIClient
+        from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
+
+        key = s.openai_api_key or "not-needed"
+        cfg = LLMConfig(api_key=key, model=s.openai_model, small_model=s.openai_small_model,
+                        base_url=s.openai_base_url, temperature=0.0)
+        if s.openai_base_url:
+            self.llm_client = OpenAIGenericClient(config=cfg)
+        else:
+            self.llm_client = OpenAIClient(config=cfg, reasoning=s.openai_reasoning or "low")
+        self.embedder = OpenAIEmbedder(config=OpenAIEmbedderConfig(
+            api_key=key, embedding_model=s.openai_embedding_model, base_url=s.openai_base_url))
+        self.reranker = OpenAIRerankerClient(config=LLMConfig(api_key=key, model=s.openai_small_model,
+                                                              base_url=s.openai_base_url))
+        log.info("기억 엔진: OpenAI (%s / 임베딩 %s%s)", s.openai_model, s.openai_embedding_model,
+                 f" @ {s.openai_base_url}" if s.openai_base_url else "")
 
     # ------------------------------------------------------------------ lifecycle
     @property
