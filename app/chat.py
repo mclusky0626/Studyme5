@@ -24,12 +24,24 @@ from .usage import tracker
 log = logging.getLogger(__name__)
 
 # "잠시만요, 찾아볼게요" 처럼 나중을 약속하고 끝내는 답변 감지 (봇은 한 번 답하면 후속 메시지를 못 보냄)
-PROMISE_RE = re.compile(
-    r"(잠시만|잠깐만|기다려\s*주|기다려줘|찾아\s*(볼|보고|올)|검색해\s*(볼|보고|올)|알아\s*(볼|보고|올)|"
-    r"확인해\s*(볼|보고|올)|조사해\s*(볼|보고|올)|정리해\s*서?\s*(보여|알려|드릴|줄)|준비해\s*서?\s*(보여|드릴)|"
-    r"곧\s*(보여|알려|정리)|금방\s*(보여|알려|정리|가져))"
-)
 DEFERRING_TOOLS = {"start_background_task", "schedule_task", "set_reminder"}  # 실제로 나중 처리가 예약된 경우
+PROMISE_RE = re.compile(
+    r"(잠시만|잠깐만|기다려\s*주|기다려줘|"
+    # '살펴볼게', '찾아볼게요', '알아봐 줄게', '확인해 올게', '검색해 보고 올게' …
+    r"(살펴|찾아|알아|검색해|확인해|조사해|읽어|들여다|체크해|훑어|뒤져)\s*(보고\s*)?(볼|봐\s*줄|봐\s*드릴|올|와\s*줄)\s*(게|께|테니)|"
+    r"(찾아|알아|검색해|확인해|조사해)\s*(볼|보고|올)|"
+    # '정리해서 보여드릴게', '가져다 줄게', '곧 알려줄게' …
+    r"(정리해|준비해|모아|찾아|가져)\s*(서|다)?\s*(보여|알려|드릴|줄|전해)|"
+    r"(곧|금방|바로|이따)\s*(보여|알려|정리|가져|찾아|전해|살펴))"
+)
+PROMISE_TAIL = 160  # 답변 끝부분만 본다 ("몇 가지 전해줄게.\n• …" 처럼 뒤에 내용이 있으면 약속이 아님)
+
+
+def is_unfulfilled_promise(text: str, used_tools: list[str] | None = None) -> bool:
+    """'살펴볼게' 처럼 할 일을 말만 하고 끝난 답변인지. 실제로 예약 도구를 썼으면 약속이 아니다."""
+    if not text or any(n in DEFERRING_TOOLS for n in (used_tools or [])):
+        return False
+    return bool(PROMISE_RE.search(text.strip()[-PROMISE_TAIL:]))
 NUDGE = (
     "[시스템] 방금 답변은 '잠시만요/찾아볼게요/정리해서 보여드릴게요' 같은 약속으로 끝났다. "
     "너는 이 답변 이후에 메시지를 보낼 수 없다. 정보가 더 필요하면 지금 도구를 호출하고, "
@@ -181,7 +193,7 @@ class ChatResponder:
                     draft = (getattr(response, "text", None) or "").strip()
                     # 약속만 하고 끝난 답변이면 한 번 더 기회를 준다 (마지막 단계여도 도구 없이 완성하게)
                     deferred = tool_ctx is not None and any(n in DEFERRING_TOOLS for n in tool_ctx.used)
-                    if not nudged and not deferred and draft and PROMISE_RE.search(draft[-300:]) and response.candidates:
+                    if not nudged and not deferred and draft and PROMISE_RE.search(draft[-PROMISE_TAIL:]) and response.candidates:
                         log.info("약속형 답변 감지 → 완성 요청: %s", draft[-120:].replace("\n", " "))
                         nudged = True
                         contents.append(response.candidates[0].content)

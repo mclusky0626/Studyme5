@@ -12,9 +12,9 @@ from zoneinfo import ZoneInfo
 import discord
 from discord import app_commands
 
-from .agent import run_agent
+from .agent import AgentLimits, run_agent
 from .batcher import EpisodeBatcher
-from .chat import ChatResponder, ShortLine
+from .chat import ChatResponder, ShortLine, is_unfulfilled_promise
 from .config import Settings
 from .gemini_resilience import RateLimiter
 from .help import TOPICS, build_help, is_help_request
@@ -345,11 +345,18 @@ class MemoryBot(discord.Client):
             return
 
         reply_text: str | None = None
+        sent_msg: discord.Message | None = None
+        tool_ctx = None
         started = asyncio.get_running_loop().time()
         log.info("💬 [%s] %s: %s", gid, speaker, text[:80].replace("\n", " "))
         try:
             async with message.channel.typing():
                 memory_ctx = await self._recall(gid, message.author, f"{speaker} {text}")
+                tool_ctx = self.chat.tool_context(
+                    memory=self.memory, reminders=self.reminders, tasks=self.tasks, group_id=gid,
+                    channel_id=message.channel.id, user_id=message.author.id, message_id=message.id,
+                    user_name=uname, is_dm=message.guild is None,
+                )
                 reply_text = await self.chat.reply(
                     bot_name=bot_name,
                     place=space_name,
@@ -357,14 +364,10 @@ class MemoryBot(discord.Client):
                     current=current,
                     memory=memory_ctx,
                     persona=persona,
-                    tool_ctx=self.chat.tool_context(
-                        memory=self.memory, reminders=self.reminders, tasks=self.tasks, group_id=gid,
-                        channel_id=message.channel.id, user_id=message.author.id, message_id=message.id,
-                        user_name=uname, is_dm=message.guild is None,
-                    ),
+                    tool_ctx=tool_ctx,
                 )
             chunks = split_message(reply_text)
-            await message.reply(chunks[0], mention_author=False)
+            sent_msg = await message.reply(chunks[0], mention_author=False)
             for chunk in chunks[1:]:
                 await message.channel.send(chunk)
             log.info("↩️ [%s] 답변 전송 (%.1fs, %d자, 메시지 %d개)", gid,
@@ -378,6 +381,15 @@ class MemoryBot(discord.Client):
             except Exception:  # noqa: BLE001
                 pass
 
+        # ---- "살펴볼게" 처럼 말만 하고 끝났으면, 다시 불리지 않아도 스스로 이어서 해내고 후속 메시지를 보낸다 ----
+        if reply_text and sent_msg is not None and is_unfulfilled_promise(reply_text, tool_ctx.used if tool_ctx else None):
+            log.info("🔁 [%s] 약속만 하고 끝난 답변 → 스스로 이어서 처리: %s", gid, reply_text[-80:].replace("\n", " "))
+            t = asyncio.create_task(self._follow_up(message, sent_msg, text=text, promise=reply_text,
+                                                    bot_name=bot_name, persona=persona, gid=gid, uname=uname,
+                                                    buffers_fn=lambda: buffers))
+            self._bg.append(t)
+            t.add_done_callback(lambda done: self._bg.remove(done) if done in self._bg else None)
+
         # ---- 답변 전송 "이후" 에만 기억 버퍼에 적재 (저장은 백그라운드) ----
         buffers = [user_buf] if message.guild is None else [server_buf] + ([user_buf] if user_buf else [])
         for buf in buffers:
@@ -387,6 +399,40 @@ class MemoryBot(discord.Client):
                 self.batcher.add(speaker=bot_name, text=reply_text, is_bot=True, **buf)
         if reply_text:
             history.append(ShortLine(speaker=bot_name, text=reply_text, is_bot=True))
+
+    async def _follow_up(self, message: discord.Message, sent: discord.Message, *, text: str, promise: str,
+                         bot_name: str, persona: str, gid: str, uname: str, buffers_fn) -> None:
+        """약속을 실제로 이행하는 후속 메시지 (최대 5단계 · 2분)."""
+        goal = (f"사용자({uname})의 요청: {text}\n"
+                f"너의 직전 답변(여기서 무언가를 하겠다고 했다): {promise}")
+        ctx = self.chat.tool_context(memory=self.memory, group_id=gid, channel_id=message.channel.id,
+                                     user_id=message.author.id, user_name=uname, is_dm=message.guild is None)
+        try:
+            async with message.channel.typing():
+                result = await run_agent(self.chat, goal, ctx=ctx,
+                                         limits=AgentLimits(max_steps=5, max_seconds=120, max_tokens=60_000),
+                                         bot_name=bot_name, persona=persona, model=self.s.chat_model,
+                                         mode="followup")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[%s] 후속 처리 실패: %s", gid, exc)
+            return
+        out = (result.text or "").strip()
+        if not out or out.upper().startswith("NOOP") or "작업을 끝냈지만" in out:
+            log.info("🔁 [%s] 후속 처리: 보낼 내용 없음", gid)
+            return
+        chunks = split_message(out)
+        try:
+            await sent.reply(chunks[0], mention_author=False)
+            for chunk in chunks[1:]:
+                await message.channel.send(chunk)
+        except discord.HTTPException as exc:
+            log.warning("[%s] 후속 메시지 전송 실패: %s", gid, exc)
+            return
+        log.info("🔁 [%s] 후속 메시지 전송 (%d단계, %d자)", gid, result.steps, len(out))
+        self.short_term[message.channel.id].append(ShortLine(speaker=bot_name, text=out, is_bot=True))
+        for buf in buffers_fn():
+            if buf:
+                self.batcher.add(speaker=bot_name, text=out, is_bot=True, **buf)
 
     # ------------------------------------------------------------------ slash commands
     def _register_commands(self) -> None:

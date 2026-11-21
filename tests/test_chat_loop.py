@@ -66,3 +66,27 @@ async def test_nudge_only_once():
     await _reply(chat, chat.tool_context())
     assert calls == 2  # 무한 루프 없이 한 번만 재촉
     await chat.aclose()
+
+
+def test_promise_detection_cases():
+    from app.chat import is_unfulfilled_promise as p
+
+    promises = [
+        "아, '요즘 뉴스'를 그냥 찾아보라는 거였구나! 오타인 줄 알았어. 오늘 주요 뉴스를 몇 가지 살펴볼게.",
+        "원하시는 대로 싹 정리해서 보여드릴게요. (잠시만요, 데이터 양이 꽤 많으니 조금만 기다려 주세요!)",
+        "좋아, 바로 알아봐 줄게!",
+        "그거 확인해 보고 올게요",
+        "최신 가격 금방 찾아올게~",
+    ]
+    normal = [
+        "응, 찾아봤지! 오늘 주요 뉴스 몇 가지 전해줄게.\n\n• 경부선 화물열차 탈선: 세종시 소정리역 인근에서 화물열차가 탈선해 일부 구간 운행이 조정됐어.\n"
+        "• 대법원장 탄핵소추: 국회에서 탄핵소추안이 당론으로 채택됐어.\n• 수능 부정행위 의혹: 정부가 수사를 의뢰할 방침이래.",
+        "크리스마스까지 34일 남았어요!",
+        "다음에 또 얘기해요. 좋은 하루 보내!",
+    ]
+    for t in promises:
+        assert p(t), t
+    for t in normal:
+        assert not p(t), t
+    # 리마인더·백그라운드 작업처럼 실제로 예약했으면 약속이 아니다
+    assert not p("40분 뒤에 알려줄게! 곧 알려줄게", ["set_reminder"])

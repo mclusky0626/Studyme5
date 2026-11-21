@@ -56,6 +56,23 @@ AGENT_PROMPT = """너는 디스코드 봇 '{bot_name}'의 백그라운드 조사
 
 현재 시각: {now}"""
 
+FOLLOWUP_PROMPT = """너는 디스코드 봇 '{bot_name}'이다. 방금 사용자에게 무언가를 하겠다고 말했지만 아직 하지 않았다.
+지금 그 일을 실제로 끝내고, 사용자에게 바로 보낼 후속 메시지를 쓴다. 사용자가 다시 부르지 않아도 너가 먼저 이어서 말하는 상황이다.
+
+[상황]
+{goal}
+
+[규칙]
+- 필요한 도구(web_search, fetch_url, calculate 등)를 지금 호출해 정보를 모은 뒤 결과를 전한다. 다시 '찾아볼게' 같은 약속은 하지 마라.
+- 디스코드 채팅 말투로, 결과 위주로 간결하게 (목록 사용 가능, 표는 쓰지 마라). 첫 문장을 '찾아왔어!'처럼 자연스럽게 시작해도 좋다.
+- 직전 답변에서 이미 할 말을 다 했거나 실제로 할 일이 없으면, 다른 말 없이 정확히 NOOP 한 단어만 출력하라.
+- 최대 {max_steps}단계 안에 끝낸다.
+
+[페르소나]
+{persona}
+
+현재 시각: {now}"""
+
 FINALIZE = ("[시스템] 작업 한도({reason})에 도달했다. 더 이상 도구를 쓰지 말고, "
             "지금까지 모은 정보만으로 최종 보고서를 작성하라. 부족한 부분은 부족하다고 밝혀라.")
 
@@ -107,10 +124,11 @@ async def run_agent(
     model: str,
     on_progress: ProgressCb | None = None,
     is_cancelled: CancelCb | None = None,
+    mode: str = "report",
 ) -> AgentResult:
     started = time.monotonic()
     decls = [d for d in declarations(ctx) if d.name not in AGENT_EXCLUDED_TOOLS]
-    system = AGENT_PROMPT.format(
+    system = (FOLLOWUP_PROMPT if mode == "followup" else AGENT_PROMPT).format(
         bot_name=bot_name, goal=goal, max_steps=limits.max_steps, persona=persona,
         now=datetime.now(KST).strftime("%Y-%m-%d (%a) %H:%M KST"),
     )
