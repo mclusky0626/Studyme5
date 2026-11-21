@@ -26,6 +26,7 @@ from .memory import (
     user_extraction_hint,
     user_group_id,
 )
+from .modelswitch import ModelSwitcher, ModelSwitchError
 from .persona import PersonaStore
 from .tasks import Messenger, TaskManager, TaskStore, describe_schedule
 from .tools import ToolError
@@ -78,6 +79,7 @@ class MemoryBot(discord.Client):
         tracker.bind(redis)  # 모든 Gemini 호출의 토큰을 일별로 기록
         # 이름·페르소나: 관리 웹 > persona.md > .env > 기본값 (재시작 없이 반영)
         self.persona = PersonaStore(settings, redis)
+        self.models = ModelSwitcher(self.chat, redis)  # /model 로 실행 중 전환
         self.reminders = ReminderStore(redis)
         self.tasks = TaskManager(settings, TaskStore(redis),
                                  Messenger(send=self._task_send, edit=self._task_edit),
@@ -97,6 +99,7 @@ class MemoryBot(discord.Client):
     async def setup_hook(self) -> None:
         if await self.memory.start():
             await self.batcher.replay_failed()
+            await self.models.restore()
         try:
             if self.s.dev_guild_id:
                 guild = discord.Object(id=self.s.dev_guild_id)
@@ -128,7 +131,7 @@ class MemoryBot(discord.Client):
 
     async def on_ready(self) -> None:
         log.info("로그인: %s (id=%s) — 서버 %d개, 채팅 %s(%s) · 기억 %s · 검색 %s", self.user, self.user.id,
-                 len(self.guilds), self.s.active_chat_model, self.s.chat_provider, self.s.memory_provider,
+                 len(self.guilds), self.chat.backend.model, self.chat.backend.provider, self.s.memory_provider,
                  self.s.search_provider)
         await self.change_presence(activity=discord.Game(name="@멘션하면 대답해요"))
 
@@ -195,8 +198,8 @@ class MemoryBot(discord.Client):
         return {
             "bot": str(self.user) if self.user else None,
             "guilds": len(self.guilds),
-            "chat_model": self.s.active_chat_model,
-            "chat_provider": self.s.chat_provider,
+            "chat_model": self.chat.backend.model,
+            "chat_provider": self.chat.backend.provider,
             "memory_provider": self.s.memory_provider,
             "graph_model": self.s.llm_model,
             "embedding_model": self.s.embedding_model,
@@ -566,6 +569,70 @@ class MemoryBot(discord.Client):
                                               ephemeral=True)
 
         self.tree.add_command(help_cmd)
+
+        # -------------------------------------------------------------- /model
+        model_group = app_commands.Group(name="model", description="채팅 모델 보기·바꾸기 (서버 관리자/봇 주인)",
+                                         default_permissions=discord.Permissions(manage_guild=True))
+
+        async def owner_or_manager(inter: discord.Interaction) -> bool:
+            if inter.guild is None and not await self.is_owner(inter.user):
+                await inter.response.send_message("DM 에서는 봇 주인만 쓸 수 있어요.", ephemeral=True)
+                return False
+            return True
+
+        def describe(cur: dict) -> str:
+            note = "" if not cur["overridden"] else f"\n기본값: `{cur['default_provider']}` / `{cur['default_model']}`"
+            return (f"**채팅 모델** `{cur['provider']}` / `{cur['model']}`{note}\n"
+                    f"기억(추출·임베딩): `{self.s.memory_provider}` · 검색: `{self.s.search_provider}` "
+                    f"(이 둘은 .env 에서만 변경)")
+
+        @model_group.command(name="show", description="지금 쓰는 모델")
+        async def model_show(inter: discord.Interaction) -> None:
+            if await owner_or_manager(inter):
+                await inter.response.send_message(describe(self.models.current()), ephemeral=True)
+
+        @model_group.command(name="list", description="바꿀 수 있는 모델 목록")
+        @app_commands.describe(provider="제공자")
+        @app_commands.choices(provider=[app_commands.Choice(name=p, value=p) for p in ("gemini", "openai")])
+        async def model_list(inter: discord.Interaction, provider: app_commands.Choice[str] | None = None) -> None:
+            if not await owner_or_manager(inter):
+                return
+            await inter.response.defer(ephemeral=True, thinking=True)
+            prov = provider.value if provider else self.chat.backend.provider
+            names = await self.models.list_models(prov)
+            if not names:
+                await inter.followup.send(f"`{prov}` 모델 목록을 가져오지 못했어요 (키 확인). 이름을 알면 `/model set` 으로 바로 지정할 수 있어요.",
+                                          ephemeral=True)
+                return
+            cur = self.chat.backend.model
+            lines = [("▶ " if n == cur else "• ") + f"`{n}`" for n in names[:40]]
+            await inter.followup.send(f"**{prov} 모델** ({len(names)}개)\n" + "\n".join(lines)[:1900], ephemeral=True)
+
+        @model_group.command(name="set", description="채팅 모델 바꾸기 (재시작 없이 바로 적용, 시험 호출로 확인)")
+        @app_commands.describe(model="모델 이름 (예: gemini-3.5-flash, gpt-6-luna)", provider="제공자 (비우면 지금 제공자)")
+        @app_commands.choices(provider=[app_commands.Choice(name=p, value=p) for p in ("gemini", "openai")])
+        async def model_set(inter: discord.Interaction, model: str,
+                            provider: app_commands.Choice[str] | None = None) -> None:
+            if not await owner_or_manager(inter):
+                return
+            await inter.response.defer(ephemeral=True, thinking=True)
+            prov = provider.value if provider else self.chat.backend.provider
+            try:
+                cur = await self.models.set(prov, model)
+            except ModelSwitchError as exc:
+                await inter.followup.send(f"⚠️ {exc}", ephemeral=True)
+                return
+            await inter.followup.send("✅ 바꿨어요. 다음 답변부터 적용돼요.\n" + describe(cur)
+                                      + "\n※ 단가가 다르면 `/usage` 추정 비용도 달라져요.", ephemeral=True)
+
+        @model_group.command(name="reset", description=".env 의 기본 모델로 되돌리기")
+        async def model_reset(inter: discord.Interaction) -> None:
+            if not await owner_or_manager(inter):
+                return
+            cur = await self.models.reset()
+            await inter.response.send_message("↩️ 기본 모델로 되돌렸어요.\n" + describe(cur), ephemeral=True)
+
+        self.tree.add_command(model_group)
 
         # -------------------------------------------------------------- /usage
         @app_commands.command(name="usage", description="Gemini API 사용량과 추정 비용 (서버 관리자/봇 주인)")

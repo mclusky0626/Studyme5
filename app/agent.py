@@ -134,8 +134,11 @@ async def run_agent(
         now=datetime.now(KST).strftime("%Y-%m-%d (%a) %H:%M KST"),
     )
     # 제공자(CHAT_PROVIDER)에 맞는 어댑터. Gemini 는 작업용 모델·사고 수준을 따로 쓴다.
-    gemini = chat.s.chat_provider == "gemini"
-    be = make_backend(chat.s, chat.limiter, model=model if gemini else None, thinking_level="low")
+    # 지금 채팅에 쓰는 제공자·모델(/model 로 바뀌었을 수 있음)을 따른다.
+    # 기본 Gemini 모델 그대로면 작업용 모델(TASK_MODEL)을 쓴다.
+    cur = chat.backend
+    use_model = model if (cur.provider == "gemini" and cur.model == chat.s.chat_model) else cur.model
+    be = make_backend(chat.s, chat.limiter, provider=cur.provider, model=use_model, thinking_level="low")
     conv = be.start(system, f"작업을 시작하라: {goal}")
     result = AgentResult(text="")
     category = "chat" if mode == "followup" else "task"
