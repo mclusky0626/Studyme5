@@ -26,7 +26,7 @@ from .memory import (
     user_extraction_hint,
     user_group_id,
 )
-from .modelswitch import ModelSwitcher, ModelSwitchError
+from .modelswitch import RECOMMENDED, ModelSwitcher, ModelSwitchError
 from .persona import PersonaStore
 from .tasks import Messenger, TaskManager, TaskStore, describe_schedule
 from .tools import ToolError
@@ -605,7 +605,8 @@ class MemoryBot(discord.Client):
                                           ephemeral=True)
                 return
             cur = self.chat.backend.model
-            lines = [("▶ " if n == cur else "• ") + f"`{n}`" for n in names[:40]]
+            lines = [("▶ " if n == cur else "• ") + f"`{n}`" + (f" — {RECOMMENDED[n]}" if n in RECOMMENDED else "")
+                     for n in names[:40]]
             await inter.followup.send(f"**{prov} 모델** ({len(names)}개)\n" + "\n".join(lines)[:1900], ephemeral=True)
 
         @model_group.command(name="set", description="채팅 모델 바꾸기 (재시작 없이 바로 적용, 시험 호출로 확인)")
@@ -624,6 +625,17 @@ class MemoryBot(discord.Client):
                 return
             await inter.followup.send("✅ 바꿨어요. 다음 답변부터 적용돼요.\n" + describe(cur)
                                       + "\n※ 단가가 다르면 `/usage` 추정 비용도 달라져요.", ephemeral=True)
+
+        @model_set.autocomplete("model")
+        async def model_autocomplete(inter: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+            prov = getattr(inter.namespace, "provider", None) or self.chat.backend.provider
+            names = await self.models.list_models(str(prov))
+            cur = current.lower().strip()
+            hits = [n for n in names if cur in n.lower()]
+            # 추천 모델을 위로
+            hits.sort(key=lambda n: (n not in RECOMMENDED, n))
+            return [app_commands.Choice(name=(f"{n} · {RECOMMENDED[n]}" if n in RECOMMENDED else n)[:100], value=n)
+                    for n in hits[:25]]
 
         @model_group.command(name="reset", description=".env 의 기본 모델로 되돌리기")
         async def model_reset(inter: discord.Interaction) -> None:

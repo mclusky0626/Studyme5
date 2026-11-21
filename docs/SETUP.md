@@ -123,6 +123,22 @@ python main.py admin    # 관리 웹 → http://localhost:8000 (FalkorDB 필요)
 | `/model set model:<이름> [provider]` | 바꾸기 — 먼저 짧은 시험 호출을 해서 이름 오타·권한 문제면 거절하고 그대로 둠 |
 | `/model reset` | `.env` 기본 모델로 되돌리기 |
 
+`/model set` 에서 모델 이름을 치기 시작하면 **자동완성 목록**이 뜹니다 (추천 모델이 위에, 채팅에 안 맞는 에이전트·이미지 모델은 제외).
+
+**채팅에 쓸 수 있는 Gemini 모델** (2026-11-21, 이 키 기준 `/model list` 결과)
+
+| 모델 | 비고 |
+|---|---|
+| `gemini-3.5-flash-lite` | **기본** · 가장 저렴 (입력 $0.30 · 출력 $2.50 / 100만 토큰) |
+| `gemini-3.5-flash` | 더 똑똑함 · 자동 캐시 지원 · 답변당 약 2배 (입력 $1.50 · 출력 $9.00) |
+| `gemini-3.6-flash` · `gemini-3.7-flash` · `gemini-3.8-flash` | 더 최신 Flash 계열 |
+| `gemini-4-argon` · `gemini-4-carbon` · `gemini-4-hydrogen` · `gemini-4-neon` | Gemini 4 계열 |
+| `gemini-omni-flash-preview` | 프리뷰 |
+| `gemini-2.5-flash` · `gemini-2.5-flash-lite` · `gemini-2.5-pro` · `gemini-3.1-flash-lite` | 이전 세대 |
+| `gemma-4-26b-a4b-it` · `gemma-4-31b-it` | 공개 모델 (Gemma) |
+
+추천 두 개 외의 단가는 확인하지 않았습니다 — 바꾸기 전에 [Gemini API 가격표](https://ai.google.dev/pricing)를 보고, `/usage` 추정 비용이 맞도록 `.env` 의 `PRICE_*` 도 맞춰 주세요. 목록은 계정·시기에 따라 달라지니 최신은 `/model list` 로 확인하세요.
+
 기억(추출·임베딩)과 검색 제공자는 기존 기억과의 호환 때문에 `.env` 에서만 바꿉니다. 모델마다 단가가 달라 `/usage` 추정 비용도 달라집니다.
 
 | 설정 | 무엇에 쓰나 | 값 |

@@ -19,6 +19,14 @@ if TYPE_CHECKING:  # pragma: no cover
 log = logging.getLogger(__name__)
 KEY = "memorybot:model_override"
 PROVIDERS = ("gemini", "openai")
+# 채팅용이 아닌 모델 (에이전트 전용·이미지 생성 등)
+NOT_CHAT = ("antigravity", "deep-research", "nano-banana", "image", "tts", "embedding", "imagen", "veo",
+            "whisper", "dall-e", "moderation", "audio", "realtime", "transcribe")
+RECOMMENDED = {
+    "gemini-3.5-flash-lite": "기본 · 가장 저렴",
+    "gemini-3.5-flash": "더 똑똑함 · 답변당 약 2배 · 자동 캐시 지원",
+}
+CACHE_SECONDS = 600
 
 
 class ModelSwitchError(Exception):
@@ -102,7 +110,20 @@ class ModelSwitcher:
             log.warning("저장된 모델 전환을 적용하지 못해 기본값을 씁니다: %s", exc)
 
     async def list_models(self, provider: str) -> list[str]:
-        """선택 가능한 모델 이름 (API 가 목록을 주면 그대로, 아니면 빈 목록)."""
+        """선택 가능한 채팅 모델 이름 (10분 캐시). API 가 목록을 못 주면 빈 목록."""
+        import time
+
+        cache = getattr(self, "_list_cache", {})
+        self._list_cache = cache
+        hit = cache.get(provider)
+        if hit and time.monotonic() - hit[0] < CACHE_SECONDS:
+            return hit[1]
+        names = [n for n in await self._fetch_models(provider) if not any(x in n for x in NOT_CHAT)]
+        if names:
+            cache[provider] = (time.monotonic(), names)
+        return names
+
+    async def _fetch_models(self, provider: str) -> list[str]:
         try:
             if provider == "gemini":
                 names = []
