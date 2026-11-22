@@ -5,7 +5,7 @@ Graphiti(시간 인식 지식 그래프) + FalkorDB + Gemini 로 만든, **대�
 앞으로의 스터디미 개발은 없을 것이고 현재 기능을 추가하고 유지보수 하는 방식일 것입니다.
 
  **자세한 설명은 [상세 가이드 (docs/GUIDE.md)](docs/GUIDE.md)** — [설치·운영](docs/SETUP.md) · [기능](docs/FEATURES.md) · [관리자](docs/ADMIN.md) · [설계](docs/DESIGN.md)
-이 봇 설명은 나의 봇인 라스페치아 기준으로 작성을 해놓았다. 니들 입맛에 따라 봇 이름 바꾸고 페르소나 바꿔라
+이 봇 설명은 나의 봇인 라스페치아 기준으로 작성을 해놓았다. 님들 입맛에 따라 봇 이름 바꾸고 페르소나 바꿔라
 ```mermaid
 flowchart LR
     U[디스코드 사용자] -- "@멘션 / DM / 답장" --> B[bot]
