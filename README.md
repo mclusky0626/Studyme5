@@ -3,6 +3,7 @@
 Graphiti(시간 인식 지식 그래프) + FalkorDB + Gemini 로 만든, **대화를 오래 기억하고 계산·날씨·검색까지 해 주는 디스코드 봇**입니다.
 `docker compose` 한 번으로 FalkorDB · 봇 · 기억 관리 웹이 함께 뜹니다.
 앞으로의 스터디미 개발은 없을 것이고 현재 기능을 추가하고 유지보수 하는 방식일 것입니다.
+현재 이코드 운영권은 N.cat에게 있습니다
 
  **자세한 설명은 [상세 가이드 (docs/GUIDE.md)](docs/GUIDE.md)** — [설치·운영](docs/SETUP.md) · [기능](docs/FEATURES.md) · [관리자](docs/ADMIN.md) · [설계](docs/DESIGN.md)
 이 봇 설명은 나의 봇인 라스페치아 기준으로 작성을 해놓았다. 님들 입맛에 따라 봇 이름 바꾸고 페르소나 바꿔라
